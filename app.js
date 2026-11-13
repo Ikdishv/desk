@@ -494,6 +494,20 @@
     return '<header class="navbar">' + back + titleHtml + trail + "</header>";
   }
 
+  function scannerQuietText() {
+    // Wall clock vs the last scanner heartbeat in the gist. During a
+    // desk freeze the gist itself is stale, but Date.now() still moves,
+    // so this note appears once the heartbeat is older than 5 minutes.
+    const a = agent("scanner");
+    const ts = a && a.heartbeat;
+    if (!ts) return "";
+    const d = new Date(ts);
+    if (isNaN(d.getTime())) return "";
+    const min = Math.floor((Date.now() - d.getTime()) / 60000);
+    if (min < 5) return "";
+    return "Scanner quiet for " + min + " min";
+  }
+
   function errorRow() {
     if (!error || error === "desk") {
       if (!(state && state.error)) return "";
@@ -552,6 +566,8 @@
     h += "</div>";
     if (warn && typeof warn === "string") h += '<div class="warn">' + esc(warn) + "</div>";
     else if (warn && warn.message) h += '<div class="warn">' + esc(warn.message) + "</div>";
+    const quiet = scannerQuietText();
+    if (quiet) h += '<div class="warn">' + esc(quiet) + "</div>";
     h += "</div>";
 
     h += '<div class="chart-wrap"><canvas id="home-chart"></canvas></div>';
@@ -1343,7 +1359,7 @@
 
   // SW: cache the shell. No push subscription (plan B).
   // Reload once when a new worker claims the page so the installed
-  // home-screen app picks up the bumped cache (desk-shell-v7).
+  // home-screen app picks up the bumped cache (desk-shell-v8).
   if ("serviceWorker" in navigator && !isLocalHost()) {
     var swRefreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", function () {
