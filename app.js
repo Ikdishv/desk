@@ -1,6 +1,6 @@
 /* Desk app. STEP 8 UI. Live data from a secret gist (or local /d/ fixtures).
    Opens as {URL}#d={id}[/route]; the id is kept in localStorage and is never
-   embedded in this file. Settings are read-only on plan B. No web push. */
+   embedded in this file. Settings changes go through Telegram (Apply sheet). No web push. */
 (function () {
   "use strict";
 
@@ -31,6 +31,9 @@
   let bellOpen = false;
   let unread = false;
   let seenActivityId = 0;
+  let pending = null; // Apply-sheet draft: {kind, key, value, ...}
+  let dragging = false;
+  let interacting = false;
 
   if (location.search.indexOf("shot=1") !== -1) {
     document.documentElement.classList.add("shot");
@@ -734,15 +737,21 @@
     const card = a.card || {};
     const name = a.name || (key.charAt(0).toUpperCase() + key.slice(1));
     const paused = !!a.paused;
-    const running = !paused && (a.status === "ok" || a.status === "running" || a.status);
+    const switchOn = pending && pending.kind === "agent" && pending.key === key ? !!pending.value : !paused;
+    const running = switchOn && (a.status === "ok" || a.status === "running" || a.status);
     const count = card.title || "";
     const locked = key === "risk" && ((state.positions || []).some(function (p) { return p.status === "open"; }));
     const decisions = a.decisions || [];
     let h = '<article class="full-card"><div class="top">';
-    h += '<span class="dot' + (paused ? " paused" : running ? "" : " off") + '"></span>';
+    h += '<span class="dot' + (!switchOn ? " paused" : running ? "" : " off") + '"></span>';
     h += "<h3>" + esc(name) + "</h3>";
     h += '<span class="count">' + esc(count) + "</span>";
-    h += '<button class="switch' + (paused ? "" : " on") + '" disabled title="Change via Telegram: /pause ' + esc(name) + '"></button>';
+    h += '<button type="button" class="switch' + (switchOn ? " on" : "") +
+      '" role="switch" aria-checked="' + (switchOn ? "true" : "false") +
+      '" data-act="switch" data-kind="agent" data-key="' + esc(key) +
+      '" data-label="' + esc(name) + '"' +
+      (locked ? ' data-locked="1" aria-disabled="true" title="Risk is locked while a position is open."' : "") +
+      ' aria-label="' + esc(name) + (switchOn ? " on" : " off") + '"></button>';
     h += "</div>";
     if (locked) h += '<div class="note">Risk is locked while a position is open.</div>';
     if (key === "analyst") {
@@ -783,8 +792,8 @@
     let h = navbar({ title: "Account" }) + errorRow();
     h += '<div class="page-pad">';
     h += '<div class="group">Mode</div><div class="mode-switch">';
-    h += '<button class="' + (paper ? "on paper" : "") + '">PAPER</button>';
-    h += '<button class="' + (paper ? "" : "on") + '">LIVE</button></div>';
+    h += '<button type="button" class="' + (paper ? "on paper" : "") + '" data-act="mode" data-mode="PAPER">PAPER</button>';
+    h += '<button type="button" class="' + (paper ? "" : "on") + '" data-act="mode" data-mode="LIVE">LIVE</button></div>';
     h += '<div class="note">' + esc(state.settingsNote || "Change mode and settings with Telegram commands.") + "</div>";
     h += '<div class="setting"><label>Stack</label><input type="text" class="num-input" lang="en" disabled value="' +
       esc(money(state.stackUsd != null ? state.stackUsd : state.paperStartStack, 2)) + '"></div>';
@@ -801,7 +810,7 @@
       h += '<div class="group" id="g-' + esc(g) + '">' + esc(labelGroup(g)) + "</div>";
       const items = Array.isArray(grouped[g]) ? grouped[g] : objectSettings(grouped[g]);
       items.forEach(function (s) {
-        h += settingRow(s);
+        h += settingRow(s, g);
       });
     });
 
@@ -830,37 +839,81 @@
       return { key: k, name: k, value: v };
     });
   }
-  function settingRow(s) {
+  function settingRow(s, group) {
     if (!s) return "";
-    const name = s.name || s.label || s.short || shortKey(s.key);
+    let name = s.name || s.label || s.short || shortKey(s.key);
+    if (group && /^(enabled|mode|poll|retries)$/i.test(String(name).trim())) {
+      name = labelGroup(group) + " · " + name;
+    }
     const val = s.value != null ? s.value : s.v;
     const min = s.min != null ? s.min : s.lo, max = s.max != null ? s.max : s.hi;
     const numeric = typeof val === "number";
     const bool = typeof val === "boolean";
     const key = String(s.key || name || "");
+    const kind = s.kind || (bool ? "bool" : numeric ? "float" : "str");
+    const alias = s.alias || shortAlias(key);
+    const unit = s.unit || "";
+    if (key === "desk.mode") return "";
+    const shownVal = (pending && pending.kind === "set" && pending.key === key) ? pending.value : val;
+    const attrs = ' data-key="' + esc(key) + '" data-alias="' + esc(alias) +
+      '" data-kind="' + esc(kind) + '" data-label="' + esc(name) +
+      '" data-unit="' + esc(unit) + '"' +
+      (min != null ? ' data-min="' + esc(String(min)) + '"' : "") +
+      (max != null ? ' data-max="' + esc(String(max)) + '"' : "");
     let ctrl = "";
     if (bool) {
-      ctrl = '<button class="switch' + (val ? " on" : "") + '" disabled></button>';
+      const on = !!shownVal;
+      ctrl = '<button type="button" class="switch' + (on ? " on" : "") +
+        '" role="switch" aria-checked="' + (on ? "true" : "false") +
+        '" data-act="switch" data-kind="set"' + attrs +
+        ' aria-label="' + esc(name) + '"></button>';
+    } else if (s.choices && s.choices.length) {
+      ctrl = '<select class="num-input setting-select"' + attrs + '>';
+      s.choices.forEach(function (c) {
+        const cur = String(shownVal) === String(c) ? " selected" : "";
+        const liveBlock = (key === "desk.mode" && String(c).toUpperCase() === "LIVE");
+        ctrl += '<option value="' + esc(String(c)) + '"' + cur +
+          (liveBlock ? " disabled" : "") + ">" + esc(String(c)) + "</option>";
+      });
+      ctrl += "</select>";
     } else if (numeric && min != null && max != null) {
-      const shown = plainNum(val);
-      ctrl = '<input type="range" disabled min="' + esc(String(min)) + '" max="' + esc(String(max)) +
-        '" step="any" value="' + esc(String(val)) + '">' +
-        '<input type="text" class="num-input" inputmode="decimal" lang="en" disabled value="' + esc(shown) + '">';
+      const shown = plainNum(shownVal);
+      const step = stepFor(kind, min, max);
+      ctrl = '<input type="range" min="' + esc(String(min)) + '" max="' + esc(String(max)) +
+        '" step="' + esc(step) + '" value="' + esc(String(shownVal)) + '"' + attrs + '>' +
+        '<input type="text" class="num-input" inputmode="decimal" lang="en" value="' +
+        esc(shown) + '"' + attrs + ">";
     } else if (numeric) {
-      ctrl = '<input type="text" class="num-input" inputmode="decimal" lang="en" disabled value="' +
-        esc(plainNum(val)) + '">';
+      ctrl = '<input type="text" class="num-input" inputmode="decimal" lang="en" value="' +
+        esc(plainNum(shownVal)) + '"' + attrs + ">";
     } else {
-      const text = val == null ? "" : String(val);
+      const text = shownVal == null ? "" : String(shownVal);
       const long = text.length > 18 || /^https?:\/\//.test(text) || /url|rpc/i.test(key);
       if (long) {
         ctrl = '<button type="button" class="val-long" data-act="reveal" data-full="' + esc(text) +
           '" aria-label="' + esc(name) + ': ' + esc(text) + '">' +
           '<span class="val-full">' + esc(text) + "</span></button>";
+        // RPC / long strings: a compact "Change via Telegram" hint with copyable command
+        const cmd = "/set " + alias + " " + text;
+        ctrl += '<button type="button" class="settings-link change-via" data-act="propose-text"' +
+          attrs + ' data-value="' + esc(text) + '">Change via Telegram</button>';
       } else {
-        ctrl = '<input type="text" class="num-input" lang="en" disabled value="' + esc(text) + '">';
+        ctrl = '<input type="text" class="num-input" lang="en" value="' + esc(text) + '"' + attrs + ">";
       }
     }
     return '<div class="setting"><label>' + esc(name) + "</label>" + ctrl + "</div>";
+  }
+  function shortAlias(key) {
+    if (!key) return "";
+    const i = String(key).lastIndexOf(".");
+    return (i >= 0 ? key.slice(i + 1) : String(key)).replace(/\s+/g, "_");
+  }
+  function stepFor(kind, min, max) {
+    if (kind === "int") return "1";
+    const span = (min != null && max != null) ? Number(max) - Number(min) : NaN;
+    if (isFinite(span) && span <= 2) return "0.01";
+    if (isFinite(span) && span <= 200) return "0.5";
+    return "any";
   }
   function shortKey(k) {
     if (!k) return "";
@@ -916,8 +969,13 @@
       h += '<div class="verdict-sub">Grok Bot won\'t buy ' + esc(cur.name || "X") + "</div>";
     }
     const enabled = settingValue("auditor.enabled");
+    const audOn = pending && pending.kind === "set" && pending.key === "auditor.enabled"
+      ? !!pending.value : (enabled !== false);
     h += '<div class="toggle-row"><span>Take apart before buying</span>' +
-      '<button class="switch' + (enabled === false ? "" : " on") + '" disabled title="Change via Telegram"></button></div>';
+      '<button type="button" class="switch' + (audOn ? " on" : "") +
+      '" role="switch" aria-checked="' + (audOn ? "true" : "false") +
+      '" data-act="switch" data-kind="set" data-key="auditor.enabled" data-alias="auditor"' +
+      ' data-label="Take apart before buying" aria-label="Take apart before buying"></button></div>';
     if (cur.url) {
       h += '<a class="cta" href="' + esc(cur.url) + '" target="_blank" rel="noopener">Open on FOMO</a>';
     }
@@ -1244,6 +1302,321 @@
     bind();
   }
 
+
+  function botName() {
+    const u = (state && state.botUsername) || "grokdeskautomated_bot";
+    return String(u).replace(/^@/, "") || "grokdeskautomated_bot";
+  }
+  function encodeStartValue(kind, value) {
+    if (kind === "bool" || typeof value === "boolean") return value ? "on" : "off";
+    if (kind === "time") return String(value).replace(":", "-");
+    var s;
+    if (typeof value === "number" && isFinite(value)) s = plainNum(value);
+    else s = String(value == null ? "" : value);
+    return s.replace(/\./g, "p").replace(/:/g, "-").replace(/[^A-Za-z0-9_-]/g, "");
+  }
+  function setPayload(alias, kind, value) {
+    if (!alias) return null;
+    const p = "set_" + alias + "_" + encodeStartValue(kind, value);
+    if (p.length > 64 || !/^[A-Za-z0-9_-]+$/.test(p)) return null;
+    return p;
+  }
+  function agentPayload(name, on) {
+    const n = String(name || "").toLowerCase();
+    const p = "agent_" + n + (on ? "_on" : "_off");
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(p)) return null;
+    return p;
+  }
+  function fallbackSetCmd(alias, kind, value) {
+    var raw;
+    if (kind === "bool" || typeof value === "boolean") raw = value ? "on" : "off";
+    else if (typeof value === "number") raw = plainNum(value);
+    else raw = String(value);
+    return "/set " + alias + " " + raw;
+  }
+  function fallbackAgentCmd(name, on) {
+    return "/agent " + String(name || "").toLowerCase() + (on ? " on" : " off");
+  }
+  function telegramStart(payload) {
+    return "https://t.me/" + botName() + "?start=" + payload;
+  }
+  function valuesMatch(a, b) {
+    if (a === b) return true;
+    if (typeof a === "boolean" || typeof b === "boolean") return !!a === !!b;
+    if (typeof a === "number" || typeof b === "number") {
+      return isFinite(Number(a)) && isFinite(Number(b)) && Math.abs(Number(a) - Number(b)) < 1e-9;
+    }
+    return String(a) === String(b);
+  }
+  function maybeClearPending() {
+    if (!pending || !state) return;
+    if (pending.kind === "set") {
+      const cur = settingValue(pending.key);
+      if (cur !== undefined && valuesMatch(cur, pending.value)) pending = null;
+    } else if (pending.kind === "agent") {
+      const a = agent(pending.key);
+      const on = !a.paused;
+      if (valuesMatch(on, pending.value)) pending = null;
+    }
+  }
+  function displayPending(p) {
+    if (!p) return "";
+    if (p.kind === "blocked-live") return "";
+    if (p.kind === "agent") return p.value ? "On" : "Off";
+    if (p.kind === "paper") return "PAPER";
+    if (p.settingKind === "bool" || typeof p.value === "boolean") return p.value ? "On" : "Off";
+    if (typeof p.value === "number") {
+      if (p.unit === "usd") return money(p.value, 2);
+      if (p.unit === "%") return plainNum(p.value) + "%";
+      return plainNum(p.value) + (p.unit ? " " + p.unit : "");
+    }
+    return String(p.value == null ? "" : p.value);
+  }
+  function proposeSet(key, alias, kind, label, value, unit, orig) {
+    if (key === "desk.mode" && String(value).toUpperCase() === "LIVE") {
+      proposeLiveBlocked();
+      return;
+    }
+    if (orig !== undefined && valuesMatch(value, orig) && !(pending && pending.key === key)) {
+      return;
+    }
+    const payload = setPayload(alias, kind, value);
+    const cmd = fallbackSetCmd(alias, kind, value);
+    pending = {
+      kind: "set",
+      key: key,
+      alias: alias,
+      value: value,
+      orig: orig,
+      label: label,
+      settingKind: kind,
+      unit: unit || "",
+      payload: payload,
+      cmd: cmd,
+      href: payload ? telegramStart(payload) : "",
+    };
+    showApplySheet();
+  }
+  function proposeAgent(name, on, origOn, locked) {
+    if (locked) {
+      pending = {
+        kind: "locked-risk",
+        key: name,
+        label: "Risk",
+        note: "I can't pause Risk while a position is open.",
+        cmd: "",
+        href: "",
+      };
+      showApplySheet();
+      return;
+    }
+    const payload = agentPayload(name, on);
+    const cmd = fallbackAgentCmd(name, on);
+    pending = {
+      kind: "agent",
+      key: name,
+      value: on,
+      orig: origOn,
+      label: name.charAt(0).toUpperCase() + name.slice(1),
+      payload: payload,
+      cmd: cmd,
+      href: payload ? telegramStart(payload) : "",
+    };
+    showApplySheet();
+    render();
+  }
+  function proposeLiveBlocked() {
+    pending = {
+      kind: "blocked-live",
+      label: "LIVE",
+      note: "LIVE cannot be turned on from the app. After one full PAPER night, open Telegram and type live, then LIVE.",
+      cmd: "LIVE",
+      href: "",
+    };
+    showApplySheet();
+  }
+  function proposePaper() {
+    const cur = ((state && state.mode) || "PAPER").toUpperCase();
+    if (cur === "PAPER") return;
+    pending = {
+      kind: "paper",
+      value: "PAPER",
+      label: "PAPER",
+      payload: "paper",
+      cmd: "/paper",
+      href: telegramStart("paper"),
+    };
+    showApplySheet();
+  }
+  function onSwitch(btn) {
+    const kind = btn.getAttribute("data-kind") || "set";
+    const key = btn.getAttribute("data-key") || "";
+    const locked = btn.getAttribute("data-locked") === "1";
+    const currentlyOn = btn.classList.contains("on") || btn.getAttribute("aria-checked") === "true";
+    const next = !currentlyOn;
+    if (kind === "agent") {
+      proposeAgent(key, next, currentlyOn, locked);
+      return;
+    }
+    btn.classList.toggle("on", next);
+    btn.setAttribute("aria-checked", next ? "true" : "false");
+    proposeSet(
+      key,
+      btn.getAttribute("data-alias") || shortAlias(key),
+      "bool",
+      btn.getAttribute("data-label") || shortKey(key),
+      next,
+      "",
+      currentlyOn
+    );
+  }
+  function applySheetHTML(p) {
+    let h = '<div class="apply-backdrop" data-act="apply-cancel"></div>';
+    h += '<div class="apply-card">';
+    if (p.kind === "blocked-live") {
+      h += '<h3 id="apply-title">LIVE isn\'t available from here</h3>';
+      h += '<p class="apply-note">' + esc(p.note) + "</p>";
+      h += '<a class="apply-open secondary" href="https://t.me/' + esc(botName()) +
+        '" target="_blank" rel="noopener">Open Telegram</a>';
+      h += '<button type="button" class="apply-cancel" data-act="apply-cancel">OK</button>';
+      h += "</div>";
+      return h;
+    }
+    if (p.kind === "locked-risk") {
+      h += '<h3 id="apply-title">Risk is locked</h3>';
+      h += '<p class="apply-note">' + esc(p.note) + "</p>";
+      h += '<button type="button" class="apply-cancel" data-act="apply-cancel">OK</button>';
+      h += "</div>";
+      return h;
+    }
+    const title = p.kind === "agent"
+      ? ((p.value ? "Resume " : "Pause ") + (p.label || p.key))
+      : ("Apply " + (p.label || p.key) + "?");
+    h += '<h3 id="apply-title">' + esc(title) + "</h3>";
+    const shown = displayPending(p);
+    if (shown) h += '<p class="apply-val">' + esc(shown) + "</p>";
+    h += '<p class="apply-note">This opens Telegram with the command ready. Send it, and the desk updates in about 15 seconds.</p>';
+    if (p.href) {
+      h += '<a class="apply-open" id="apply-open" href="' + esc(p.href) +
+        '" target="_blank" rel="noopener">Open Telegram</a>';
+    }
+    if (p.cmd) {
+      h += '<div class="apply-fallback"><code id="apply-cmd">' + esc(p.cmd) + "</code>";
+      h += '<button type="button" class="apply-copy" data-act="copy-cmd">Copy command</button></div>';
+    }
+    h += '<button type="button" class="apply-cancel" data-act="apply-cancel">Cancel</button>';
+    h += "</div>";
+    return h;
+  }
+  function showApplySheet() {
+    if (!pending) {
+      const old = document.getElementById("apply-sheet");
+      if (old) old.remove();
+      document.body.classList.remove("apply-open");
+      return;
+    }
+    let el = document.getElementById("apply-sheet");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "apply-sheet";
+      el.className = "apply-sheet";
+      el.setAttribute("role", "dialog");
+      el.setAttribute("aria-modal", "true");
+      el.setAttribute("aria-labelledby", "apply-title");
+      document.body.appendChild(el);
+    }
+    el.innerHTML = applySheetHTML(pending);
+    document.body.classList.add("apply-open");
+  }
+  function hideApplySheet(revert) {
+    pending = null;
+    const old = document.getElementById("apply-sheet");
+    if (old) old.remove();
+    document.body.classList.remove("apply-open");
+    if (revert !== false) render();
+  }
+  function copyCmd() {
+    if (!pending || !pending.cmd) return;
+    const done = function () {
+      const b = document.querySelector(".apply-copy");
+      if (b) { b.textContent = "Copied"; setTimeout(function () { if (b) b.textContent = "Copy command"; }, 1400); }
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(pending.cmd).then(done).catch(done);
+    } else done();
+  }
+  function bindControls() {
+    const ranges = $app.querySelectorAll("input[type='range'][data-key]");
+    ranges.forEach(function (el) {
+      el.addEventListener("pointerdown", function () { dragging = true; });
+      el.addEventListener("pointerup", function () { dragging = false; });
+      el.addEventListener("pointercancel", function () { dragging = false; });
+      el.addEventListener("touchstart", function () { dragging = true; }, { passive: true });
+      el.addEventListener("touchend", function () { dragging = false; });
+      el.addEventListener("input", function () {
+        dragging = true;
+        const box = el.closest(".setting");
+        const num = box && box.querySelector("input.num-input");
+        if (num) num.value = plainNum(el.value);
+      });
+      el.addEventListener("change", function () {
+        dragging = false;
+        commitNumeric(el);
+      });
+    });
+    $app.querySelectorAll("input.num-input[data-key]").forEach(function (el) {
+      el.addEventListener("focus", function () { interacting = true; });
+      el.addEventListener("blur", function () {
+        interacting = false;
+        commitNumeric(el);
+      });
+      el.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") { e.preventDefault(); el.blur(); }
+      });
+    });
+    $app.querySelectorAll("select[data-key]").forEach(function (el) {
+      el.addEventListener("change", function () {
+        const v = el.value;
+        proposeSet(
+          el.getAttribute("data-key"),
+          el.getAttribute("data-alias") || shortAlias(el.getAttribute("data-key")),
+          el.getAttribute("data-kind") || "choice",
+          el.getAttribute("data-label") || shortKey(el.getAttribute("data-key")),
+          v,
+          el.getAttribute("data-unit") || "",
+          settingValue(el.getAttribute("data-key"))
+        );
+      });
+    });
+  }
+  function commitNumeric(el) {
+    const key = el.getAttribute("data-key");
+    if (!key) return;
+    const kind = el.getAttribute("data-kind") || "float";
+    const raw = el.value;
+    let v = Number(String(raw).replace(",", ".").replace("%", "").replace("$", "").replace(/,/g, ""));
+    if (!isFinite(v)) return;
+    const min = el.getAttribute("data-min");
+    const max = el.getAttribute("data-max");
+    if (min != null && min !== "" && v < Number(min)) v = Number(min);
+    if (max != null && max !== "" && v > Number(max)) v = Number(max);
+    if (kind === "int") v = Math.round(v);
+    const box = el.closest(".setting");
+    const range = box && box.querySelector("input[type='range']");
+    const num = box && box.querySelector("input.num-input");
+    if (range) range.value = String(v);
+    if (num) num.value = plainNum(v);
+    proposeSet(
+      key,
+      el.getAttribute("data-alias") || shortAlias(key),
+      kind,
+      el.getAttribute("data-label") || shortKey(key),
+      v,
+      el.getAttribute("data-unit") || "",
+      settingValue(key)
+    );
+  }
+
   function bind() {
     const ranges = document.getElementById("ranges");
     if (ranges) {
@@ -1258,6 +1631,8 @@
         drawHomeChart(empty && chartRange === "LIVE" && !(state.positions || []).length);
       });
     }
+    bindControls();
+    showApplySheet();
   }
   // Use one delegated listener on document to avoid stacking
   let bound = false;
@@ -1265,6 +1640,42 @@
     // Never hijack taps on fields — iOS standalone will not focus an
     // <input> if a parent click handler calls preventDefault().
     if (e.target.closest("input, textarea, select, label")) return;
+    if (e.target.closest("[data-act='apply-cancel']")) {
+      e.preventDefault();
+      hideApplySheet(true);
+      return;
+    }
+    if (e.target.closest("[data-act='copy-cmd']")) {
+      e.preventDefault();
+      copyCmd();
+      return;
+    }
+    if (e.target.closest("[data-act='switch']")) {
+      e.preventDefault();
+      onSwitch(e.target.closest("[data-act='switch']"));
+      return;
+    }
+    if (e.target.closest("[data-act='mode']")) {
+      e.preventDefault();
+      const mode = e.target.closest("[data-act='mode']").getAttribute("data-mode");
+      if (mode === "LIVE") proposeLiveBlocked();
+      else proposePaper();
+      return;
+    }
+    if (e.target.closest("[data-act='propose-text']")) {
+      e.preventDefault();
+      const b = e.target.closest("[data-act='propose-text']");
+      proposeSet(
+        b.getAttribute("data-key"),
+        b.getAttribute("data-alias") || shortAlias(b.getAttribute("data-key")),
+        b.getAttribute("data-kind") || "str",
+        b.getAttribute("data-label") || shortKey(b.getAttribute("data-key")),
+        b.getAttribute("data-value") || "",
+        "",
+        b.getAttribute("data-value") || ""
+      );
+      return;
+    }
     if (e.target.closest("[data-act='paste-desk']")) {
       e.preventDefault();
       pasteDeskLink();
@@ -1319,8 +1730,10 @@
     const prev = route;
     parseHash();
     await loadAll();
+    maybeClearPending();
     // countdown for error banner
     if (error === "fetch") retryIn = Math.round(POLL_MS / 1000);
+    if (dragging || interacting) return;
     render();
   }
 
@@ -1328,7 +1741,7 @@
     parseHash();
     window.scrollTo(0, 0);
     render();
-    loadAll().then(render);
+    loadAll().then(function () { maybeClearPending(); render(); });
   });
   window.addEventListener("popstate", function () {
     parseHash();
@@ -1359,7 +1772,7 @@
 
   // SW: cache the shell. No push subscription (plan B).
   // Reload once when a new worker claims the page so the installed
-  // home-screen app picks up the bumped cache (desk-shell-v8).
+  // home-screen app picks up the bumped cache (desk-shell-v9).
   if ("serviceWorker" in navigator && !isLocalHost()) {
     var swRefreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", function () {
@@ -1369,6 +1782,18 @@
     });
     navigator.serviceWorker.register("sw.js").catch(function () {});
   }
+
+  try {
+    window.__deskControls = {
+      encodeStartValue: encodeStartValue,
+      setPayload: setPayload,
+      agentPayload: agentPayload,
+      fallbackSetCmd: fallbackSetCmd,
+      fallbackAgentCmd: fallbackAgentCmd,
+      telegramStart: telegramStart,
+      botName: botName,
+    };
+  } catch (e) {}
 
   parseHash();
   render(); // skeletons in the final layout immediately, before the first fetch
