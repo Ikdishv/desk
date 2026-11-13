@@ -4,8 +4,13 @@
 (function () {
   "use strict";
 
-  const POLL_MS = 60 * 1000;
+  const POLL_MS = 25 * 1000;
+  // Offline banner only if state.ts is older than this. Covers the ~45s
+  // gist PATCH interval plus raw-CDN lag. A single failed fetch must not
+  // flip the banner while the last payload is still fresh.
+  const STALE_MS = 3 * 60 * 1000;
   const LS_D = "desk.d";
+  const LS_RAW = "desk.rawBase";
   const TAB_ROUTES = { home: 1, agents: 1, activity: 1, account: 1 };
   try { history.scrollRestoration = "manual"; } catch (e) {}
   document.documentElement.setAttribute("lang", "en");
@@ -34,6 +39,7 @@
   let pending = null; // Apply-sheet draft: {kind, key, value, ...}
   let dragging = false;
   let interacting = false;
+  let rawBase = "";
 
   if (location.search.indexOf("shot=1") !== -1) {
     document.documentElement.classList.add("shot");
@@ -135,20 +141,92 @@
     return r.json();
   }
 
-  async function fetchGistBundle() {
-    const url = "https://api.github.com/gists/" + encodeURIComponent(DATA) + "?t=" + Date.now();
+  function tsMs(ts) {
+    const d = new Date(ts);
+    const n = d.getTime();
+    return isNaN(n) ? 0 : n;
+  }
+
+  function isFresh(ts) {
+    if (!ts) return false;
+    const n = tsMs(ts);
+    return n > 0 && (Date.now() - n) < STALE_MS;
+  }
+
+  function rememberRawBase(base, id) {
+    rawBase = base || "";
+    try {
+      if (rawBase && id) localStorage.setItem(LS_RAW, rawBase);
+    } catch (e) {}
+  }
+
+  function cachedRawBase(id) {
+    if (rawBase && id && rawBase.indexOf("/" + id + "/raw") !== -1) return rawBase;
+    try {
+      const b = localStorage.getItem(LS_RAW) || "";
+      if (b && id && b.indexOf("/" + id + "/raw") !== -1) {
+        rawBase = b;
+        return b;
+      }
+    } catch (e) {}
+    return "";
+  }
+
+  function rawBaseFromGistBody(body) {
+    const files = body && body.files ? body.files : {};
+    const prefer = files["state.json"] || files[Object.keys(files)[0]];
+    const raw = prefer && prefer.raw_url ? String(prefer.raw_url) : "";
+    // Pin-less prefix: …/user/id/raw  (drop the file SHA if present).
+    const m = raw.match(/^(https:\/\/gist\.githubusercontent\.com\/[^/]+\/[a-zA-Z0-9]+\/raw)(?=\/|$)/);
+    return m ? m[1] : "";
+  }
+
+  // One unauthenticated api.github.com lookup to learn the raw base.
+  // The 60/h core limit is per IP, so the poll loop must not call this.
+  async function discoverRawBase(id) {
+    const cached = cachedRawBase(id);
+    const url = "https://api.github.com/gists/" + encodeURIComponent(id) + "?t=" + Date.now();
     const r = await fetch(url, { cache: "no-store" });
+    if (r.status === 403 || r.status === 429) {
+      if (cached) return cached;
+      throw Object.assign(new Error("rate"), { status: r.status });
+    }
+    if (!r.ok) {
+      if (cached) return cached;
+      throw Object.assign(new Error("http"), { status: r.status });
+    }
+    const body = await r.json();
+    const base = rawBaseFromGistBody(body);
+    if (base) {
+      rememberRawBase(base, id);
+      return base;
+    }
+    if (cached) return cached;
+    throw new Error("no raw");
+  }
+
+  async function fetchRawJSON(base, name) {
+    const url = base + "/" + encodeURIComponent(name) + "?t=" + Date.now();
+    const r = await fetch(url, { cache: "no-store" });
+    if (r.status === 404) return null;
     if (r.status === 403 || r.status === 429) {
       throw Object.assign(new Error("rate"), { status: r.status });
     }
     if (!r.ok) throw Object.assign(new Error("http"), { status: r.status });
-    const body = await r.json();
-    const files = body && body.files ? body.files : {};
+    return r.json();
+  }
+
+  async function fetchGistBundle() {
+    // Poll gist.githubusercontent.com (no 60/h API cap). Cache-bust with ?t=.
+    let base = cachedRawBase(DATA);
+    if (!base) base = await discoverRawBase(DATA);
+    const names = ["state.json", "activity.json", "chart.json", "coins.json"];
+    const results = await Promise.all(names.map(function (n) {
+      return fetchRawJSON(base, n).then(function (j) { return [n, j]; });
+    }));
     const out = {};
-    Object.keys(files).forEach(function (name) {
-      const f = files[name];
-      if (!f || f.content == null || f.truncated) return;
-      try { out[name] = JSON.parse(f.content); } catch (e) {}
+    results.forEach(function (pair) {
+      if (pair[1] != null) out[pair[0]] = pair[1];
     });
     return out;
   }
@@ -284,8 +362,15 @@
         }
       } else {
         bundle = await fetchGistBundle();
-        state = bundle["state.json"];
-        if (!state) throw new Error("no state");
+        const incoming = bundle["state.json"];
+        if (!incoming) throw new Error("no state");
+        const prevTs = (state && state.ts) || lastGoodAt;
+        // A delayed CDN copy older than what we already have is not "new".
+        if (prevTs && tsMs(incoming.ts) < tsMs(prevTs) && isFresh(prevTs)) {
+          error = null;
+          return;
+        }
+        state = incoming;
         activity = bundle["activity.json"] || { items: [] };
         chart = bundle["chart.json"] || { ranges: {}, marks: [] };
         coins = {};
@@ -302,7 +387,7 @@
         else if (route === "auditor" && auditMint) coin = coins[auditMint] || null;
       }
       if (!error) {
-        lastGoodAt = (state && state.ts) || new Date().toISOString();
+        lastGoodAt = (state && state.ts) || lastGoodAt || new Date().toISOString();
         retryIn = 0;
         const items = (activity && activity.items) || [];
         if (items.length && items[0].id && items[0].id > seenActivityId) {
@@ -310,7 +395,18 @@
           // don't bump seen until they open the bell / activity
         }
       }
+      // Fresh fetch, but the payload itself is older than the offline window.
+      if (!error && !isFresh((state && state.ts) || lastGoodAt)) {
+        error = "fetch";
+        retryIn = Math.round(POLL_MS / 1000);
+      }
     } catch (e) {
+      const ts = (state && state.ts) || lastGoodAt;
+      if (isFresh(ts)) {
+        // One failed or rate-limited fetch must not flip the banner.
+        error = null;
+        return;
+      }
       error = "fetch";
       retryIn = Math.round(POLL_MS / 1000);
     }
@@ -1775,7 +1871,7 @@
 
   // SW: cache the shell. No push subscription (plan B).
   // Reload once when a new worker claims the page so the installed
-  // home-screen app picks up the bumped cache (desk-shell-v9).
+  // home-screen app picks up the bumped cache (desk-shell-v11).
   if ("serviceWorker" in navigator && !isLocalHost()) {
     var swRefreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", function () {
