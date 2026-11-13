@@ -84,6 +84,11 @@ a { color: var(--blue); text-decoration: none; }
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.navbar a.title {
+  color: var(--text);
+  text-decoration: none;
+  cursor: pointer;
+}
 .avatar, .nav-btn, .icon-btn {
   width: 36px;
   height: 36px;

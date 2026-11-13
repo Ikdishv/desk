@@ -426,19 +426,72 @@
     return '<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15L6 16z"/><path d="M10 19a2 2 0 0 0 4 0"/></svg>';
   }
 
+  function settingByKey(key) {
+    const g = state && state.settings;
+    if (!g) return "";
+    if (g[key] != null && typeof g[key] !== "object") return String(g[key]);
+    const names = Object.keys(g);
+    for (let i = 0; i < names.length; i++) {
+      const items = Array.isArray(g[names[i]]) ? g[names[i]] : null;
+      if (!items) continue;
+      for (let j = 0; j < items.length; j++) {
+        const s = items[j];
+        if (s && (s.key === key || s.key === "desk." + key)) {
+          if (s.value != null) return String(s.value);
+          if (s.display != null) return String(s.display);
+        }
+      }
+    }
+    return "";
+  }
+  function fomoHandle() {
+    let raw = "";
+    if (state) {
+      raw = state.fomoHandle
+        || (state.settings && state.settings.fomo_handle)
+        || settingByKey("fomo_handle")
+        || settingByKey("desk.fomo_handle")
+        || "";
+      if (raw && typeof raw === "object") raw = raw.value || raw.display || "";
+    }
+    raw = String(raw || "").trim();
+    if (!raw) raw = "beready";
+    if (raw.charAt(0) !== "@") raw = "@" + raw;
+    return raw;
+  }
+  function profileUrlFor(handle) {
+    // Must match links.py profile_url exactly.
+    if (state && state.profileUrl) return String(state.profileUrl);
+    const h = String(handle || "beready").replace(/^@+/, "");
+    return "https://fomo.family/profile/" + h + "?source=share_link&r=savipww";
+  }
+  function avatarLetter() {
+    const h = fomoHandle().replace(/^@+/, "");
+    return ((h && h.charAt(0)) || "B").toUpperCase();
+  }
+
   function navbar(opts) {
     opts = opts || {};
+    const handle = fomoHandle();
+    const letter = avatarLetter();
     const back = opts.back
       ? '<button class="back" data-go="' + esc(opts.back) + '">‹ Back</button>'
-      : '<button class="avatar" data-go="account" aria-label="Account"><span class="avatar-disc">G</span></button>';
-    const title = opts.title != null ? opts.title : "Grok Bot ›";
+      : '<button class="avatar" data-go="account" aria-label="Account"><span class="avatar-disc">' + esc(letter) + "</span></button>";
+    const title = opts.title != null ? opts.title : handle;
     const trail = opts.hideTools ? "" : (
       '<button class="icon-btn" data-act="search" aria-label="Search">' + iconSearch() + "</button>" +
       '<button class="icon-btn" data-act="bell" aria-label="Notifications">' + iconBell() +
         (unread ? '<span class="bell-dot"></span>' : "") +
       "</button>"
     );
-    return '<header class="navbar">' + back + '<div class="title">' + esc(title) + "</div>" + trail + "</header>";
+    let titleHtml;
+    if (opts.title == null || opts.linkProfile) {
+      const url = profileUrlFor(handle);
+      titleHtml = '<a class="title" href="' + esc(url) + '" target="_blank" rel="noopener">' + esc(title) + "</a>";
+    } else {
+      titleHtml = '<div class="title">' + esc(title) + "</div>";
+    }
+    return '<header class="navbar">' + back + titleHtml + trail + "</header>";
   }
 
   function errorRow() {
@@ -1000,7 +1053,7 @@
   }
   function renderLoading(which) {
     which = which || route || "home";
-    let h = navbar({ title: which === "home" ? "Grok Bot ›" : titleFor(which) }) + errorRow();
+    let h = navbar(which === "home" ? { linkProfile: true } : { title: titleFor(which) }) + errorRow();
     if (which === "activity") {
       h += '<div class="list">' + [0,1,2,3,4,5].map(skelRow).join("") + "</div>";
     } else if (which === "account") {
@@ -1033,7 +1086,7 @@
     $app.innerHTML = h;
   }
   function titleFor(r) {
-    return ({ agents: "Agents", activity: "Activity", account: "Account", auditor: "Auditor", coin: "Coin" })[r] || "Grok Bot ›";
+    return ({ agents: "Agents", activity: "Activity", account: "Account", auditor: "Auditor", coin: "Coin" })[r] || fomoHandle();
   }
 
   function renderSearch() {
@@ -1290,7 +1343,7 @@
 
   // SW: cache the shell. No push subscription (plan B).
   // Reload once when a new worker claims the page so the installed
-  // home-screen app picks up the bumped cache (desk-shell-v6).
+  // home-screen app picks up the bumped cache (desk-shell-v7).
   if ("serviceWorker" in navigator && !isLocalHost()) {
     var swRefreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", function () {
