@@ -289,6 +289,9 @@
         activity = bundle["activity.json"] || { items: [] };
         chart = bundle["chart.json"] || { ranges: {}, marks: [] };
         coins = {};
+        if (bundle["coins.json"] && typeof bundle["coins.json"] === "object" && !Array.isArray(bundle["coins.json"])) {
+          coins = bundle["coins.json"];
+        }
         Object.keys(bundle).forEach(function (n) {
           if (n.startsWith("coin_") && n.endsWith(".json")) {
             coins[n.slice(5, -5)] = bundle[n];

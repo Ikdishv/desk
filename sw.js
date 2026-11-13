@@ -1,5 +1,5 @@
 /* Shell cache only. Never cache gist / GitHub API responses. */
-const CACHE = "desk-shell-v9";
+const CACHE = "desk-shell-v10";
 const SHELL = [
   "./",
   "./index.html",
