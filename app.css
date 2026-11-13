@@ -685,16 +685,56 @@ a { color: var(--blue); text-decoration: none; }
   accent-color: var(--blue);
   height: 24px;
 }
-.setting input[type="number"], .setting input[type="text"], .setting select {
+.setting input.num-input, .setting select {
   width: 96px;
+  flex: 0 0 96px;
   background: var(--card);
   border: 0.5px solid var(--separator);
   border-radius: 8px;
   padding: 6px 8px;
   font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
   font-size: 15px;
+  font-family: var(--font-mono);
+  text-align: right;
+  min-width: 0;
 }
-.setting input:disabled, .setting select:disabled { opacity: 0.7; }
+.setting input:disabled, .setting select:disabled { opacity: 0.85; }
+.setting:has(.val-long) { align-items: flex-start; }
+.val-long {
+  flex: 1 1 100%;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  background: var(--card);
+  border: 0.5px solid var(--separator);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  min-height: 44px;
+}
+.val-long .val-full {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+.val-long.open {
+  flex: 1 1 100%;
+  width: 100%;
+  text-align: left;
+}
+
 .mode-switch {
   display: flex;
   background: var(--card);
@@ -779,6 +819,8 @@ a { color: var(--blue); text-decoration: none; }
   border-radius: 12px;
   animation: pulse 1.2s ease-in-out infinite;
 }
+.skel-row { pointer-events: none; }
+.skel-row .skel { animation: pulse 1.2s ease-in-out infinite; }
 @keyframes pulse {
   0%, 100% { opacity: 0.5; }
   50% { opacity: 1; }

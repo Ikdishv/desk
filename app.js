@@ -6,6 +6,9 @@
 
   const POLL_MS = 60 * 1000;
   const LS_D = "desk.d";
+  const TAB_ROUTES = { home: 1, agents: 1, activity: 1, account: 1 };
+  try { history.scrollRestoration = "manual"; } catch (e) {}
+  document.documentElement.setAttribute("lang", "en");
   const $app = document.getElementById("app");
   let DATA = "";
   let route = "home";
@@ -77,13 +80,35 @@
     return false;
   }
 
-  function go(r, mint) {
-    if (!DATA) return;
+  function hashPath(r, mint) {
     let path = "d=" + encodeURIComponent(DATA);
     if (r === "coin" && mint) path += "/coin/" + mint;
     else if (r === "auditor" && mint) path += "/auditor/" + mint;
     else if (r && r !== "home") path += "/" + r;
-    location.hash = path;
+    return path;
+  }
+  function go(r, mint) {
+    if (!DATA) return;
+    const path = hashPath(r, mint);
+    const hash = "#" + path;
+    const url = location.pathname + location.search + hash;
+    const isTab = !!(TAB_ROUTES[r || "home"] && !mint);
+    // Top-level tabs replace history so Safari does not show a back
+    // chevron or treat the tab as a pushed page. Coin / Auditor push.
+    if (isTab) {
+      if (location.hash !== hash) {
+        try { history.replaceState({ tab: true, route: r || "home" }, "", url); }
+        catch (e) { location.hash = path; }
+      }
+    } else if (location.hash !== hash) {
+      try { history.pushState({ tab: false, route: r, mint: mint || null }, "", url); }
+      catch (e) { location.hash = path; }
+    }
+    parseHash();
+    window.scrollTo(0, 0);
+    render(); // paint from already-loaded data (or skeletons if none)
+    // Refresh coin/auditor payloads in the background; never blank first.
+    if (!isTab) loadAll().then(render);
   }
 
   function gistFileName(rel) {
@@ -203,6 +228,26 @@
     const sign = n > 0 && signed !== false ? "+" : "";
     return sign + n.toFixed(2) + "%";
   }
+
+  /* Always '.' decimals, independent of the browser locale (cs-CZ uses ','). */
+  function plainNum(n) {
+    n = Number(n);
+    if (!isFinite(n)) return "";
+    if (Math.abs(n - Math.round(n)) < 1e-9) return String(Math.round(n));
+    const s2 = n.toFixed(2);
+    if (Math.abs(n - Number(s2)) < 1e-12) return s2;
+    return n.toFixed(8).replace(/0+$/, "").replace(/\.$/, "");
+  }
+  function midEllip(s, max) {
+    s = String(s ?? "");
+    max = max || 23;
+    if (s.length <= max) return s;
+    const inner = max - 1;
+    const front = 12;
+    const back = Math.max(4, inner - front);
+    return s.slice(0, front) + "…" + s.slice(s.length - back);
+  }
+
   function pragueTime(ts, fmt) {
     if (!ts) return "";
     const d = new Date(ts);
@@ -561,7 +606,7 @@
     h += '<button class="' + (paper ? "on paper" : "") + '">PAPER</button>';
     h += '<button class="' + (paper ? "" : "on") + '">LIVE</button></div>';
     h += '<div class="note">' + esc(state.settingsNote || "Change mode and settings with Telegram commands.") + "</div>";
-    h += '<div class="setting"><label>Stack</label><input type="text" disabled value="' +
+    h += '<div class="setting"><label>Stack</label><input type="text" class="num-input" lang="en" disabled value="' +
       esc(money(state.stackUsd != null ? state.stackUsd : state.paperStartStack, 2)) + '"></div>';
 
     h += '<button class="link-row" data-act="open" data-url="' + esc(profile) + '"><span>Your FOMO profile' +
@@ -612,14 +657,28 @@
     const min = s.min != null ? s.min : s.lo, max = s.max != null ? s.max : s.hi;
     const numeric = typeof val === "number";
     const bool = typeof val === "boolean";
+    const key = String(s.key || name || "");
     let ctrl = "";
     if (bool) {
       ctrl = '<button class="switch' + (val ? " on" : "") + '" disabled></button>';
     } else if (numeric && min != null && max != null) {
-      ctrl = '<input type="range" disabled min="' + esc(min) + '" max="' + esc(max) + '" step="any" value="' + esc(val) + '">' +
-        '<input type="number" disabled value="' + esc(val) + '">';
+      const shown = plainNum(val);
+      ctrl = '<input type="range" disabled min="' + esc(String(min)) + '" max="' + esc(String(max)) +
+        '" step="any" value="' + esc(String(val)) + '">' +
+        '<input type="text" class="num-input" inputmode="decimal" lang="en" disabled value="' + esc(shown) + '">';
+    } else if (numeric) {
+      ctrl = '<input type="text" class="num-input" inputmode="decimal" lang="en" disabled value="' +
+        esc(plainNum(val)) + '">';
     } else {
-      ctrl = '<input type="text" disabled value="' + esc(val) + '">';
+      const text = val == null ? "" : String(val);
+      const long = text.length > 18 || /^https?:\/\//.test(text) || /url|rpc/i.test(key);
+      if (long) {
+        ctrl = '<button type="button" class="val-long" data-act="reveal" data-full="' + esc(text) +
+          '" aria-label="' + esc(name) + ': ' + esc(text) + '">' +
+          '<span class="val-full">' + esc(text) + "</span></button>";
+      } else {
+        ctrl = '<input type="text" class="num-input" lang="en" disabled value="' + esc(text) + '">';
+      }
     }
     return '<div class="setting"><label>' + esc(name) + "</label>" + ctrl + "</div>";
   }
@@ -822,13 +881,44 @@
     return '<div><div class="stat-k">' + esc(k) + '</div><div class="stat-v">' + esc(v) + "</div></div>";
   }
 
+  function skelRow() {
+    return '<div class="row-card skel-row">' +
+      '<div class="mid"><div class="skel" style="height:17px;width:58%;margin-bottom:8px;border-radius:6px"></div>' +
+      '<div class="skel" style="height:13px;width:38%;border-radius:6px"></div></div>' +
+      '<div class="skel" style="height:17px;width:72px;border-radius:6px"></div></div>';
+  }
   function renderLoading(which) {
+    which = which || route || "home";
     let h = navbar({ title: which === "home" ? "Grok Bot ›" : titleFor(which) }) + errorRow();
-    h += '<div class="page-pad">';
-    h += '<div class="skel" style="height:84px;margin-bottom:12px;border-radius:12px"></div>';
-    h += '<div class="skel" style="height:210px;margin-bottom:12px;border-radius:16px"></div>';
-    h += '<div class="skel" style="height:220px;border-radius:42px"></div>';
-    h += "</div>" + tabbar();
+    if (which === "activity") {
+      h += '<div class="list">' + [0,1,2,3,4,5].map(skelRow).join("") + "</div>";
+    } else if (which === "account") {
+      h += '<div class="page-pad">';
+      h += '<div class="skel" style="height:18px;width:72px;margin:10px 0 8px;border-radius:6px"></div>';
+      h += '<div class="skel" style="height:42px;margin-bottom:16px;border-radius:10px"></div>';
+      h += '<div class="skel" style="height:44px;margin-bottom:8px;border-radius:8px"></div>';
+      h += '<div class="skel" style="height:44px;margin-bottom:8px;border-radius:8px"></div>';
+      h += '<div class="skel" style="height:18px;width:90px;margin:16px 0 8px;border-radius:6px"></div>';
+      for (let i = 0; i < 6; i++) {
+        h += '<div class="skel" style="height:56px;margin-bottom:8px;border-radius:8px"></div>';
+      }
+      h += "</div>";
+    } else if (which === "agents") {
+      h += '<div class="page-pad">';
+      for (let i = 0; i < 5; i++) {
+        h += '<div class="skel" style="height:160px;margin-bottom:12px;border-radius:18px"></div>';
+      }
+      h += "</div>";
+    } else {
+      // Home (and fallback): odometer, chart, cards — final layout.
+      h += '<div class="page-pad">';
+      h += '<div class="skel" style="height:72px;width:70%;margin-bottom:10px;border-radius:12px"></div>';
+      h += '<div class="skel" style="height:22px;width:40%;margin-bottom:16px;border-radius:8px"></div>';
+      h += '<div class="skel" style="height:210px;margin-bottom:16px;border-radius:16px"></div>';
+      h += '<div class="skel" style="height:220px;border-radius:42px"></div>';
+      h += "</div>";
+    }
+    h += tabbar();
     $app.innerHTML = h;
   }
   function titleFor(r) {
@@ -900,8 +990,11 @@
     });
   }
 
+  let paintedKey = null;
   function render() {
     parseHash();
+    const key = route + ":" + (coinMint || auditMint || "");
+    const shouldTop = paintedKey !== key;
     if (route === "home") renderHome();
     else if (route === "agents") renderAgents();
     else if (route === "activity") renderActivity();
@@ -909,6 +1002,8 @@
     else if (route === "auditor") renderAuditor();
     else if (route === "coin") renderCoin();
     else renderHome();
+    if (shouldTop) window.scrollTo(0, 0);
+    paintedKey = key;
 
     // Analyst ring on home after paint
     const ring = document.getElementById("score-ring");
@@ -937,6 +1032,11 @@
   // Use one delegated listener on document to avoid stacking
   let bound = false;
   function onClick(e) {
+    const reveal = e.target.closest("[data-act='reveal']");
+    if (reveal) {
+      reveal.classList.toggle("open");
+      return;
+    }
     const share = e.target.closest("[data-act='share']");
     if (share) {
       const url = share.getAttribute("data-url");
@@ -988,9 +1088,20 @@
 
   window.addEventListener("hashchange", function () {
     parseHash();
-    // If we already have state, paint immediately then refresh coin
+    window.scrollTo(0, 0);
     render();
     loadAll().then(render);
+  });
+  window.addEventListener("popstate", function () {
+    parseHash();
+    window.scrollTo(0, 0);
+    render();
+  });
+  window.addEventListener("pageshow", function (e) {
+    if (!e.persisted) return;
+    parseHash();
+    window.scrollTo(0, 0);
+    render();
   });
 
   // SW: cache the shell. No push subscription (plan B).
@@ -999,6 +1110,7 @@
   }
 
   parseHash();
+  render(); // skeletons in the final layout immediately, before the first fetch
   tick();
   timer = setInterval(tick, POLL_MS);
   countdownTimer = setInterval(function () {
