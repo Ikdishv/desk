@@ -230,6 +230,31 @@
     if (!ok) renderSetup();
   }
 
+  async function pasteDeskLink() {
+    setupError = "";
+    if (!navigator.clipboard || !navigator.clipboard.readText) {
+      setupError = "Couldn't read the clipboard. Paste it into the field instead.";
+      renderSetup();
+      return;
+    }
+    try {
+      const raw = await navigator.clipboard.readText();
+      const text = String(raw || "").trim();
+      if (!text) {
+        setupError = "The clipboard is empty. Paste the link into the field instead.";
+        renderSetup();
+        return;
+      }
+      const input = document.getElementById("desk-link");
+      if (input) input.value = text;
+      setupDraft = text;
+      await saveDeskLink();
+    } catch (e) {
+      setupError = "Couldn't read the clipboard. Paste it into the field instead.";
+      renderSetup();
+    }
+  }
+
   async function loadAll() {
     if (!DATA) {
       error = "missing";
@@ -1086,12 +1111,15 @@
     h += '<div class="setup-card">';
     h += "<h2>Open your desk</h2>";
     h += "<p>This copy of the app doesn't have your private link yet. Paste it below — the one that has #d= in it.</p>";
-    h += '<form class="setup-form" data-act="save-desk-form" action="javascript:void(0)">';
+    h += '<form class="setup-form" action="#" novalidate>';
     h += '<label class="setup-label" for="desk-link">Paste your private desk link</label>';
-    h += '<input id="desk-link" class="setup-input" type="text" inputmode="url" enterkeyhint="go" ';
+    h += '<input id="desk-link" class="setup-input" type="url" inputmode="url" enterkeyhint="go" ';
     h += 'autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" ';
-    h += 'placeholder="https://…#d=…" value="' + esc(keep) + '"' + (setupBusy ? " disabled" : "") + ">";
-    h += '<button type="submit" class="setup-save" data-act="save-desk"' + (setupBusy ? " disabled" : "") + ">";
+    h += 'placeholder="https://…#d=… or the id" value="' + esc(keep) + '"' + (setupBusy ? " disabled" : "") + ">";
+    h += '<button type="button" class="setup-paste" data-act="paste-desk"' + (setupBusy ? " disabled" : "") + ">";
+    h += "Paste from clipboard";
+    h += "</button>";
+    h += '<button type="submit" class="setup-save"' + (setupBusy ? " disabled" : "") + ">";
     h += setupBusy ? "Checking…" : "Save";
     h += "</button></form>";
     if (setupError) h += '<div class="setup-err" role="alert">' + esc(setupError) + "</div>";
@@ -1165,9 +1193,12 @@
   // Use one delegated listener on document to avoid stacking
   let bound = false;
   function onClick(e) {
-    if (e.target.closest("[data-act='save-desk']") || e.target.closest("[data-act='save-desk-form']")) {
+    // Never hijack taps on fields — iOS standalone will not focus an
+    // <input> if a parent click handler calls preventDefault().
+    if (e.target.closest("input, textarea, select, label")) return;
+    if (e.target.closest("[data-act='paste-desk']")) {
       e.preventDefault();
-      saveDeskLink();
+      pasteDeskLink();
       return;
     }
     const reveal = e.target.closest("[data-act='reveal']");
@@ -1258,7 +1289,15 @@
   });
 
   // SW: cache the shell. No push subscription (plan B).
+  // Reload once when a new worker claims the page so the installed
+  // home-screen app picks up the bumped cache (desk-shell-v6).
   if ("serviceWorker" in navigator && !isLocalHost()) {
+    var swRefreshing = false;
+    navigator.serviceWorker.addEventListener("controllerchange", function () {
+      if (swRefreshing) return;
+      swRefreshing = true;
+      location.reload();
+    });
     navigator.serviceWorker.register("sw.js").catch(function () {});
   }
 

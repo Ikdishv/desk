@@ -36,6 +36,14 @@ html, body {
   -webkit-font-smoothing: antialiased;
 }
 button, input { font-family: inherit; color: inherit; }
+/* iOS standalone PWAs refuse to focus inputs that inherit user-select:none
+   (or have a tiny font). Keep every field selectable and at >=16px. */
+input, textarea, select {
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
+  pointer-events: auto;
+}
 a { color: var(--blue); text-decoration: none; }
 
 .num, .odometer, .price, .pct, .mult, .value, .stat-v {
@@ -847,6 +855,7 @@ a { color: var(--blue); text-decoration: none; }
   margin-bottom: 8px;
 }
 .setup-input {
+  display: block;
   width: 100%;
   background: var(--card2);
   border: 0.5px solid var(--separator);
@@ -857,10 +866,17 @@ a { color: var(--blue); text-decoration: none; }
   outline: none;
   color: var(--text);
   margin-bottom: 12px;
+  -webkit-user-select: text;
+  user-select: text;
+  touch-action: manipulation;
+  pointer-events: auto;
+  position: relative;
+  z-index: 2;
+  cursor: text;
 }
 .setup-input:focus { border-color: var(--blue); }
 .setup-input:disabled { opacity: 0.6; }
-.setup-save {
+.setup-save, .setup-paste {
   display: block;
   width: 100%;
   min-height: 44px;
@@ -872,8 +888,16 @@ a { color: var(--blue); text-decoration: none; }
   font-weight: 590;
   cursor: pointer;
   pointer-events: auto;
+  touch-action: manipulation;
+  -webkit-user-select: none;
+  user-select: none;
 }
-.setup-save:disabled { opacity: 0.6; }
+.setup-paste {
+  background: var(--card2);
+  color: var(--text);
+  margin-bottom: 8px;
+}
+.setup-save:disabled, .setup-paste:disabled { opacity: 0.6; }
 .setup-err {
   margin-top: 12px;
   color: var(--red);
