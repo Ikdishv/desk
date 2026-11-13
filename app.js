@@ -71,12 +71,14 @@
       const stored = localStorage.getItem(LS_D);
       if (stored) {
         DATA = stored;
-        applyRoute("");
+        // Empty hash (standalone start_url) keeps the current tab.
+        // A fresh launch starts on home because route defaults to "home".
         return true;
       }
     } catch (e) {}
     DATA = "";
-    route = "home";
+    // Leave `route` alone so tabs stay tappable on the setup screen
+    // (forcing home here undid every tab click on the next render).
     return false;
   }
 
@@ -88,7 +90,13 @@
     return path;
   }
   function go(r, mint) {
-    if (!DATA) return;
+    // Tabs must stay tappable before a desk key is saved.
+    if (!DATA) {
+      applyRoute(!r || r === "home" ? "" : (r === "auditor" || r === "coin") ? "" : r);
+      window.scrollTo(0, 0);
+      render();
+      return;
+    }
     const path = hashPath(r, mint);
     const hash = "#" + path;
     const url = location.pathname + location.search + hash;
@@ -140,6 +148,86 @@
       try { out[name] = JSON.parse(f.content); } catch (e) {}
     });
     return out;
+  }
+
+  function extractDeskId(raw) {
+    raw = String(raw || "").trim().replace(/^\s+|\s+$/g, "");
+    if (!raw) return "";
+    var m = raw.match(/#d=([^/\s?#&]+)/i);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+    }
+    m = raw.match(/[?&]d=([^/\s?#&]+)/i);
+    if (m) {
+      try { return decodeURIComponent(m[1]); } catch (e) { return m[1]; }
+    }
+    m = raw.match(/gist\.github(?:usercontent)?\.com\/(?:[^/]+\/)?([a-zA-Z0-9]+)/i);
+    if (m) return m[1];
+    m = raw.match(/api\.github\.com\/gists\/([a-zA-Z0-9]+)/i);
+    if (m) return m[1];
+    // Bare id: no URL punctuation.
+    if (/^[a-zA-Z0-9_-]+$/.test(raw) && raw.length >= 8 && raw.length <= 128) return raw;
+    return "";
+  }
+
+  let setupError = "";
+  let setupDraft = "";
+  let setupBusy = false;
+
+  async function probeDesk(id) {
+    if (isLocalHost()) {
+      const r = await fetch("d/" + encodeURIComponent(id) + "/state.json?t=" + Date.now(), { cache: "no-store" });
+      return { ok: r.ok, status: r.status };
+    }
+    const r = await fetch("https://api.github.com/gists/" + encodeURIComponent(id) + "?t=" + Date.now(), { cache: "no-store" });
+    return { ok: r.status === 200, status: r.status };
+  }
+
+  async function tryAdoptLink(raw) {
+    const id = extractDeskId(raw);
+    if (!id) {
+      setupError = "Paste the full private desk link (the one with #d=), or just the id.";
+      return false;
+    }
+    try {
+      const res = await probeDesk(id);
+      if (!res.ok) {
+        if (res.status === 403 || res.status === 429) {
+          setupError = "The desk is busy. Try again in a moment.";
+        } else {
+          setupError = "That link didn't work. Check it and try again.";
+        }
+        return false;
+      }
+    } catch (e) {
+      setupError = "Couldn't reach the desk. Check your connection and try again.";
+      return false;
+    }
+    DATA = id;
+    try { localStorage.setItem(LS_D, DATA); } catch (e) {}
+    setupError = "";
+    setupDraft = "";
+    error = null;
+    try {
+      const path = "d=" + encodeURIComponent(DATA);
+      history.replaceState({ tab: true, route: "home" }, "", location.pathname + location.search + "#" + path);
+    } catch (e) {}
+    applyRoute("home");
+    await loadAll();
+    render();
+    return true;
+  }
+
+  async function saveDeskLink() {
+    const input = document.getElementById("desk-link");
+    const raw = input ? input.value : setupDraft;
+    setupDraft = raw;
+    setupError = "";
+    setupBusy = true;
+    renderSetup();
+    const ok = await tryAdoptLink(raw);
+    setupBusy = false;
+    if (!ok) renderSetup();
   }
 
   async function loadAll() {
@@ -333,9 +421,7 @@
       if (!(state && state.error)) return "";
     }
     if (!error && !(state && state.error)) return "";
-    if (error === "missing") {
-      return '<div class="error-row">Open the desk with the private link you were given.</div>';
-    }
+    if (error === "missing") return "";
     const n = retryIn || Math.round(POLL_MS / 1000);
     const t = lastGoodAt ? pragueTime(lastGoodAt) : "—";
     return '<div class="error-row">Desk offline · retrying in ' + n + "s · last update " + esc(t) + "</div>";
@@ -990,9 +1076,56 @@
     });
   }
 
+  function renderSetup() {
+    const prev = document.getElementById("desk-link");
+    const keep = prev ? prev.value : (setupDraft || "");
+    const focused = document.activeElement === prev;
+    const sel = (prev && focused) ? [prev.selectionStart, prev.selectionEnd] : null;
+    setupDraft = keep;
+    let h = navbar({ title: titleFor(route) }) + '<div class="page-pad">';
+    h += '<div class="setup-card">';
+    h += "<h2>Open your desk</h2>";
+    h += "<p>This copy of the app doesn't have your private link yet. Paste it below — the one that has #d= in it.</p>";
+    h += '<form class="setup-form" data-act="save-desk-form" action="javascript:void(0)">';
+    h += '<label class="setup-label" for="desk-link">Paste your private desk link</label>';
+    h += '<input id="desk-link" class="setup-input" type="text" inputmode="url" enterkeyhint="go" ';
+    h += 'autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false" ';
+    h += 'placeholder="https://…#d=…" value="' + esc(keep) + '"' + (setupBusy ? " disabled" : "") + ">";
+    h += '<button type="submit" class="setup-save" data-act="save-desk"' + (setupBusy ? " disabled" : "") + ">";
+    h += setupBusy ? "Checking…" : "Save";
+    h += "</button></form>";
+    if (setupError) h += '<div class="setup-err" role="alert">' + esc(setupError) + "</div>";
+    h += "</div></div>" + tabbar();
+    $app.innerHTML = h;
+    const input = document.getElementById("desk-link");
+    const form = $app.querySelector(".setup-form");
+    if (form) {
+      form.addEventListener("submit", function (e) {
+        e.preventDefault();
+        saveDeskLink();
+      });
+    }
+    if (input) {
+      input.value = keep;
+      input.addEventListener("input", function () { setupDraft = input.value; });
+      if (focused) {
+        input.focus();
+        if (sel) {
+          try { input.setSelectionRange(sel[0], sel[1]); } catch (e) {}
+        }
+      }
+    }
+  }
+
   let paintedKey = null;
   function render() {
     parseHash();
+    if (!DATA) {
+      renderSetup();
+      paintedKey = "setup:" + route;
+      bind();
+      return;
+    }
     const key = route + ":" + (coinMint || auditMint || "");
     const shouldTop = paintedKey !== key;
     if (route === "home") renderHome();
@@ -1032,6 +1165,11 @@
   // Use one delegated listener on document to avoid stacking
   let bound = false;
   function onClick(e) {
+    if (e.target.closest("[data-act='save-desk']") || e.target.closest("[data-act='save-desk-form']")) {
+      e.preventDefault();
+      saveDeskLink();
+      return;
+    }
     const reveal = e.target.closest("[data-act='reveal']");
     if (reveal) {
       reveal.classList.toggle("open");
@@ -1097,11 +1235,26 @@
     window.scrollTo(0, 0);
     render();
   });
-  window.addEventListener("pageshow", function (e) {
-    if (!e.persisted) return;
-    parseHash();
+  function adoptFromHash() {
+    const before = DATA;
+    const found = parseHash();
+    if (found && DATA && DATA !== before) {
+      error = null;
+      loadAll().then(render);
+      return true;
+    }
+    return found;
+  }
+  window.addEventListener("pageshow", function () {
+    // Re-read location.hash on every show, not only the first load
+    // or a bfcache restore — iOS can populate the fragment late.
+    adoptFromHash();
     window.scrollTo(0, 0);
     render();
+  });
+  document.addEventListener("visibilitychange", function () {
+    if (document.visibilityState !== "visible") return;
+    if (adoptFromHash() && DATA) return;
   });
 
   // SW: cache the shell. No push subscription (plan B).

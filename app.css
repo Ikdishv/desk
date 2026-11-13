@@ -122,6 +122,9 @@ a { color: var(--blue); text-decoration: none; }
   background: rgba(255, 69, 58, 0.14);
   color: var(--red);
   font-size: 13px;
+  position: relative;
+  z-index: 1;
+  pointer-events: none;
 }
 
 /* ---------- tab bar ---------- */
@@ -131,6 +134,7 @@ a { color: var(--blue); text-decoration: none; }
   right: 0;
   bottom: 0;
   z-index: 30;
+  pointer-events: auto;
   height: calc(var(--tab-h) + var(--safe-b));
   padding-bottom: var(--safe-b);
   display: flex;
@@ -811,6 +815,70 @@ a { color: var(--blue); text-decoration: none; }
   cursor: pointer;
   color: inherit;
   font-size: 16px;
+}
+
+/* ---------- first-run setup (no desk key) ---------- */
+.setup-card {
+  background: var(--card);
+  border-radius: 18px;
+  padding: 20px 16px 18px;
+  margin-top: 12px;
+  position: relative;
+  z-index: 1;
+  pointer-events: auto;
+}
+.setup-card h2 {
+  margin: 0 0 8px;
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.setup-card p {
+  margin: 0 0 18px;
+  color: var(--secondary);
+  font-size: 15px;
+  line-height: 1.4;
+}
+.setup-label {
+  display: block;
+  font-size: 13px;
+  color: var(--secondary);
+  margin-bottom: 8px;
+}
+.setup-input {
+  width: 100%;
+  background: var(--card2);
+  border: 0.5px solid var(--separator);
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 16px;
+  min-height: 44px;
+  outline: none;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+.setup-input:focus { border-color: var(--blue); }
+.setup-input:disabled { opacity: 0.6; }
+.setup-save {
+  display: block;
+  width: 100%;
+  min-height: 44px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--blue);
+  color: #fff;
+  font-size: 17px;
+  font-weight: 590;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.setup-save:disabled { opacity: 0.6; }
+.setup-err {
+  margin-top: 12px;
+  color: var(--red);
+  font-size: 14px;
+  line-height: 1.35;
 }
 
 /* ---------- loading skeletons ---------- */
