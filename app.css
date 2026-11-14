@@ -264,6 +264,15 @@ a { color: var(--blue); text-decoration: none; }
   position: relative;
 }
 .chart-wrap canvas { width: 100%; height: 100%; display: block; touch-action: manipulation; }
+.chart-wrap.scrubbing canvas { touch-action: none; cursor: ew-resize; }
+.scrub-note {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 510;
+  color: var(--secondary);
+  letter-spacing: -0.01em;
+  min-height: 1.2em;
+}
 .ranges {
   display: flex;
   gap: 2px;

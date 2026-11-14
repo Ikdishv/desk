@@ -40,6 +40,15 @@
   let dragging = false;
   let interacting = false;
   let rawBase = "";
+  let scrubbing = false;
+  let scrubMode = null; // "hold" | "hover"
+  let scrubHoldTimer = null;
+  let scrubOrigin = null;
+  let scrubSuppressClick = false;
+  let scrubMouseDrag = false;
+  let lastTouchAt = 0;
+  const SCRUB_HOLD_MS = 200;
+  const SCRUB_SLOP_PX = 12;
 
   if (location.search.indexOf("shot=1") !== -1) {
     document.documentElement.classList.add("shot");
@@ -652,9 +661,7 @@
     const warn = state.ticketWarning && (state.ticketWarning.message || state.ticketWarning);
     const ag = agentsOf();
     const last5 = items().slice(0, 5);
-    const emptyChart = !((chart.marks || []).length) && !(state.positions || []).length && !items().some(function (x) {
-      return /bought|sold|stopped/i.test(x.kind || "");
-    });
+    const emptyChart = isEmptyChart();
 
     let h = navbar() + errorRow();
     h += '<div class="balance-block"><div class="balance-row">';
@@ -667,6 +674,7 @@
     const mx = isFinite(mult) ? (mult >= 10 ? mult.toFixed(1) : mult.toFixed(2)) : "—";
     h += '<span class="mult">' + esc(mx) + "×</span>";
     h += "</div>";
+    h += '<div class="scrub-note" id="scrub-note" hidden></div>';
     if (warn && typeof warn === "string") h += '<div class="warn">' + esc(warn) + "</div>";
     else if (warn && warn.message) h += '<div class="warn">' + esc(warn.message) + "</div>";
     const quiet = scannerQuietText();
@@ -702,7 +710,172 @@
     animateExecBar();
   }
 
-  function drawHomeChart(empty) {
+  function isEmptyChart() {
+    return !((chart.marks || []).length) && !(state && (state.positions || []).length) && !items().some(function (x) {
+      return /bought|sold|stopped/i.test(x.kind || "");
+    });
+  }
+
+  function nightStartBalance() {
+    if (chart && chart.start != null && isFinite(Number(chart.start))) return Number(chart.start);
+    if (state) {
+      if (state.nightStartBalance != null && isFinite(Number(state.nightStartBalance))) {
+        return Number(state.nightStartBalance);
+      }
+      if (state.paperStartStack != null && isFinite(Number(state.paperStartStack))) {
+        return Number(state.paperStartStack);
+      }
+    }
+    return 200;
+  }
+
+  function scrubTimeLabel(t) {
+    if (t == null || t === "") return "";
+    const ms = typeof t === "number" ? t : Date.parse(String(t));
+    if (!isFinite(ms)) return "";
+    const d = new Date(ms);
+    const time = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Prague", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(d);
+    if (chartRange === "1W" || chartRange === "ALL") {
+      const day = new Intl.DateTimeFormat("en-GB", {
+        timeZone: "Europe/Prague", day: "numeric", month: "short",
+      }).format(d);
+      return day + ", " + time;
+    }
+    return time;
+  }
+
+  function axisMoney(v) {
+    v = Number(v);
+    if (!isFinite(v)) return "";
+    return money(Math.round(v), 0);
+  }
+
+  function scrubAxis(points) {
+    const axisX = [];
+    const axisY = [];
+    if (points && points.length) {
+      const first = points[0], last = points[points.length - 1];
+      axisX.push({ t: first.t, text: scrubTimeLabel(first.t) });
+      if (points.length > 1) axisX.push({ t: last.t, text: scrubTimeLabel(last.t) });
+      const vals = points.map(function (p) { return Number(p.v); }).filter(isFinite);
+      if (vals.length) {
+        const hi = Math.max.apply(null, vals);
+        const lo = Math.min.apply(null, vals);
+        const start = nightStartBalance();
+        axisY.push({ v: hi, text: axisMoney(hi) });
+        if (isFinite(start) && Math.abs(start - hi) > 0.75) axisY.push({ v: start, text: axisMoney(start) });
+        if (Math.abs(lo - hi) > 0.75 && Math.abs(lo - start) > 0.75) axisY.push({ v: lo, text: axisMoney(lo) });
+      }
+    }
+    return { axisX: axisX, axisY: axisY };
+  }
+
+  function applyScrubHeader(pt, note) {
+    const odo = document.getElementById("odo");
+    if (odo) odo.innerHTML = odometerHTML(pt.v);
+    const start = nightStartBalance();
+    const dlt = pt.v - start;
+    const pct = start ? (dlt / start) * 100 : 0;
+    const pctEl = document.querySelector(".today-pct");
+    if (pctEl) {
+      const signed = window.Charts && Charts.signedUsd
+        ? Charts.signedUsd(dlt)
+        : ((dlt < 0 ? "\u2212" : dlt > 0 ? "+" : "") + money(Math.abs(dlt)));
+      const pctTxt = pctFmt(pct, true).replace("-", "\u2212");
+      pctEl.textContent = pctTxt + " \u00b7 " + signed;
+      pctEl.classList.toggle("up", dlt >= 0);
+      pctEl.classList.toggle("down", dlt < 0);
+    }
+    const mx = document.querySelector(".mult");
+    if (mx) mx.style.visibility = "hidden";
+    const noteEl = document.getElementById("scrub-note");
+    if (noteEl) {
+      if (note) { noteEl.textContent = note; noteEl.hidden = false; }
+      else { noteEl.textContent = ""; noteEl.hidden = true; }
+    }
+  }
+
+  function restoreLiveHeader() {
+    if (!state) return;
+    const bal = state.balance != null ? state.balance : state.balanceUsd;
+    const odo = document.getElementById("odo");
+    if (odo) odo.innerHTML = odometerHTML(bal);
+    const today = Number(state.todayPct);
+    const pctEl = document.querySelector(".today-pct");
+    if (pctEl) {
+      pctEl.textContent = isFinite(today) ? pctFmt(today, true) : "—";
+      pctEl.classList.toggle("up", isFinite(today) && today >= 0);
+      pctEl.classList.toggle("down", isFinite(today) && today < 0);
+    }
+    const mx = document.querySelector(".mult");
+    if (mx) mx.style.visibility = "";
+    const noteEl = document.getElementById("scrub-note");
+    if (noteEl) { noteEl.textContent = ""; noteEl.hidden = true; }
+  }
+
+  function setScrubbingUI(on) {
+    const wrap = document.querySelector(".chart-wrap");
+    if (wrap) wrap.classList.toggle("scrubbing", !!on);
+  }
+
+  function canHoverScrub() {
+    return !!(window.matchMedia && window.matchMedia("(hover: hover) and (pointer: fine)").matches)
+      && (Date.now() - lastTouchAt > 800);
+  }
+
+  function startScrub(mode, canvas, x) {
+    scrubbing = true;
+    scrubMode = mode;
+    setScrubbingUI(true);
+    moveScrub(canvas, x);
+  }
+
+  function moveScrub(canvas, cssX) {
+    if (!canvas || !window.Charts) return;
+    if (!canvas._deskChart) drawHomeChart(isEmptyChart());
+    const geo = canvas._deskChart;
+    if (!geo || !geo.points || geo.points.length < 2) return;
+    const pt = Charts.nearestPoint(geo, cssX);
+    if (!pt) return;
+    const hit = Charts.nearestHit(geo.hits, pt.x, 14);
+    const note = Charts.scrubNote(hit, (activity && activity.items) || items() || []);
+    applyScrubHeader(pt, note);
+    const pack = (chart.ranges && chart.ranges[chartRange]) || {};
+    const axis = scrubAxis(pack.points || []);
+    drawHomeChart(false, {
+      x: pt.x,
+      label: scrubTimeLabel(pt.t),
+      axisX: axis.axisX,
+      axisY: axis.axisY,
+    });
+  }
+
+  function endScrub(opts) {
+    opts = opts || {};
+    if (scrubHoldTimer) { clearTimeout(scrubHoldTimer); scrubHoldTimer = null; }
+    scrubOrigin = null;
+    const was = scrubbing;
+    scrubbing = false;
+    scrubMode = null;
+    setScrubbingUI(false);
+    const canvas = document.getElementById("home-chart");
+    if (canvas) canvas.style.cursor = "";
+    if (!was) return;
+    if (!opts.silent) {
+      restoreLiveHeader();
+      drawHomeChart(isEmptyChart());
+    }
+  }
+
+  function eventCanvasX(e, canvas, src) {
+    const rect = canvas.getBoundingClientRect();
+    const pt = src || (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]) || e;
+    return pt.clientX - rect.left;
+  }
+
+  function drawHomeChart(empty, scrub) {
     const c = document.getElementById("home-chart");
     if (!c || !window.Charts) return;
     const pack = (chart.ranges && chart.ranges[chartRange]) || {};
@@ -715,6 +888,7 @@
       marks: marks,
       empty: empty || points.length < 2,
       emptyText: "Waiting for the first trade",
+      scrub: scrub || null,
     });
   }
 
@@ -1788,6 +1962,7 @@
       ranges.addEventListener("click", function (e) {
         const b = e.target.closest("[data-range]");
         if (!b) return;
+        endScrub({ silent: true });
         chartRange = b.getAttribute("data-range");
         ranges.querySelectorAll("button").forEach(function (x) {
           x.classList.toggle("on", x === b);
@@ -1802,6 +1977,13 @@
   // Use one delegated listener on document to avoid stacking
   let bound = false;
   function onClick(e) {
+    if (scrubSuppressClick) {
+      scrubSuppressClick = false;
+      if (e.target.closest && e.target.closest("#home-chart")) {
+        e.preventDefault();
+        return;
+      }
+    }
     // Never hijack taps on fields — iOS standalone will not focus an
     // <input> if a parent click handler calls preventDefault().
     if (e.target.closest("input, textarea, select, label")) return;
@@ -1885,13 +2067,91 @@
     const mint = hit.getAttribute("data-mint");
     go(r, mint);
   }
+  function onChartMouseDown(e) {
+    if (!canHoverScrub()) return;
+    if (!(e.target && e.target.id === "home-chart")) return;
+    scrubMouseDrag = true;
+    const canvas = e.target;
+    if (!scrubbing) startScrub("hover", canvas, eventCanvasX(e, canvas));
+  }
+  function onChartMouseUp(e) {
+    const wasDrag = scrubMouseDrag;
+    scrubMouseDrag = false;
+    if (!wasDrag) return;
+    const over = e.target && e.target.id === "home-chart";
+    if (!over && scrubbing && scrubMode === "hover") endScrub();
+  }
+  function onChartMouseMove(e) {
+    const canvas = document.getElementById("home-chart");
+    if (!canvas) {
+      if (scrubbing && scrubMode === "hover") endScrub();
+      return;
+    }
+    if (scrubMouseDrag && scrubbing) {
+      moveScrub(canvas, eventCanvasX(e, canvas));
+      return;
+    }
+    if (!canHoverScrub()) return;
+    const over = e.target && e.target.id === "home-chart";
+    if (over) {
+      if (!scrubbing) startScrub("hover", canvas, eventCanvasX(e, canvas));
+      else moveScrub(canvas, eventCanvasX(e, canvas));
+      canvas.style.cursor = chartMarkMint(canvas, e) ? "pointer" : "ew-resize";
+    } else if (scrubbing && scrubMode === "hover") {
+      endScrub();
+    }
+  }
+  function onChartTouchStart(e) {
+    if (!(e.target && e.target.id === "home-chart")) return;
+    lastTouchAt = Date.now();
+    const canvas = e.target;
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    scrubOrigin = { clientX: t.clientX, clientY: t.clientY, canvas: canvas };
+    if (scrubHoldTimer) clearTimeout(scrubHoldTimer);
+    scrubHoldTimer = setTimeout(function () {
+      scrubHoldTimer = null;
+      if (!scrubOrigin) return;
+      const x = scrubOrigin.clientX - canvas.getBoundingClientRect().left;
+      startScrub("hold", canvas, x);
+    }, SCRUB_HOLD_MS);
+  }
+  function onChartTouchMove(e) {
+    const t = (e.touches && e.touches[0]) || (e.changedTouches && e.changedTouches[0]);
+    if (!t) return;
+    if (scrubOrigin && !scrubbing) {
+      if (Math.hypot(t.clientX - scrubOrigin.clientX, t.clientY - scrubOrigin.clientY) > SCRUB_SLOP_PX) {
+        if (scrubHoldTimer) clearTimeout(scrubHoldTimer);
+        scrubHoldTimer = null;
+        scrubOrigin = null;
+      }
+      return;
+    }
+    if (scrubbing && scrubMode === "hold") {
+      if (e.cancelable) e.preventDefault();
+      const canvas = document.getElementById("home-chart") || (scrubOrigin && scrubOrigin.canvas);
+      if (canvas) moveScrub(canvas, t.clientX - canvas.getBoundingClientRect().left);
+    }
+  }
+  function onChartTouchEnd() {
+    lastTouchAt = Date.now();
+    if (scrubHoldTimer) { clearTimeout(scrubHoldTimer); scrubHoldTimer = null; }
+    const wasHold = scrubbing && scrubMode === "hold";
+    scrubOrigin = null;
+    if (wasHold) {
+      scrubSuppressClick = true;
+      endScrub();
+    }
+  }
   if (!bound) {
     document.addEventListener("click", onClick);
-    document.addEventListener("mousemove", function (e) {
-      const el = e.target && e.target.id === "home-chart" ? e.target : null;
-      if (!el) return;
-      el.style.cursor = chartMarkMint(el, e) ? "pointer" : "default";
-    });
+    document.addEventListener("mousedown", onChartMouseDown);
+    document.addEventListener("mouseup", onChartMouseUp);
+    document.addEventListener("mousemove", onChartMouseMove);
+    document.addEventListener("touchstart", onChartTouchStart, { passive: true });
+    document.addEventListener("touchmove", onChartTouchMove, { passive: false });
+    document.addEventListener("touchend", onChartTouchEnd, { passive: true });
+    document.addEventListener("touchcancel", onChartTouchEnd, { passive: true });
     bound = true;
   }
 
@@ -1928,11 +2188,12 @@
     maybeClearPending();
     // countdown for error banner
     if (error === "fetch") retryIn = Math.round(POLL_MS / 1000);
-    if (dragging || interacting) return;
+    if (dragging || interacting || scrubbing) return;
     render();
   }
 
   window.addEventListener("hashchange", function () {
+    endScrub({ silent: true });
     parseHash();
     window.scrollTo(0, 0);
     render();

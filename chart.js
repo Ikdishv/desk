@@ -51,9 +51,11 @@
     start = Number(start);
     if (!isFinite(start)) start = 0;
 
-    var padL = 8, padR = 36, padB = 18, padT = 14; // room for the end dot and trade dots
+    var padL = 8, padR = 36, padB = 18, padT = 22; // room for scrub time label + end/trade dots
     var marks = opts.marks || [];
     var empty = opts.empty || points.length < 2;
+    var scrub = opts.scrub;
+    if (typeof scrub === "number") scrub = { x: scrub };
 
     var vals = points.map(function (p) { return p.v; }).concat([start]);
     var minV = Math.min.apply(null, vals);
@@ -76,6 +78,15 @@
     function xOf(t) { return padL + ((t - t0) / (t1 - t0)) * (W - padL - padR); }
     function yOf(v) { return padT + (1 - (v - minV) / span) * (H - padT - padB); }
 
+    function geo(hits) {
+      return {
+        points: points, xOf: xOf, yOf: yOf, t0: t0, t1: t1,
+        padL: padL, padR: padR, padT: padT, padB: padB,
+        W: W, H: H, start: start, minV: minV, maxV: maxV,
+        hits: hits || []
+      };
+    }
+
     // Dashed start-value line
     var yS = yOf(start);
     ctx.save();
@@ -97,63 +108,76 @@
         ctx.fillText(opts.emptyText || "Waiting for the first trade", W / 2, Math.min(H * 0.58, yS + 28));
       }
       canvas._deskHits = [];
+      canvas._deskChart = geo([]);
       return { xOf: xOf, yOf: yOf, hits: [] };
     }
 
-    // Line path
-    ctx.beginPath();
-    points.forEach(function (p, i) {
-      var x = xOf(p.t), y = yOf(p.v);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    var path = new Path2D();
-    points.forEach(function (p, i) {
-      var x = xOf(p.t), y = yOf(p.v);
-      if (i === 0) path.moveTo(x, y);
-      else path.lineTo(x, y);
-    });
-
-    // Gradient fill under the line (allowed; cards themselves have no gradients)
     var last = points[points.length - 1];
     var first = points[0];
-    var fill = ctx.createLinearGradient(0, padT, 0, H - padB);
-    fill.addColorStop(0, "rgba(0,211,90,0.32)");
-    fill.addColorStop(1, "rgba(0,211,90,0)");
-    ctx.save();
-    ctx.beginPath();
-    ctx.moveTo(xOf(first.t), H - padB);
-    points.forEach(function (p, i) {
-      var x = xOf(p.t), y = yOf(p.v);
-      if (i === 0) ctx.lineTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.lineTo(xOf(last.t), H - padB);
-    ctx.closePath();
-    ctx.fillStyle = fill;
-    ctx.fill();
-    ctx.restore();
+    var scrubX = null;
+    if (scrub && isFinite(Number(scrub.x))) {
+      scrubX = Math.max(padL, Math.min(W - padR, Number(scrub.x)));
+    }
 
-    // Stroke
-    ctx.save();
-    ctx.strokeStyle = "#00d35a";
-    ctx.lineWidth = 2;
-    ctx.lineJoin = "round";
-    ctx.lineCap = "round";
-    ctx.beginPath();
-    points.forEach(function (p, i) {
-      var x = xOf(p.t), y = yOf(p.v);
-      if (i === 0) ctx.moveTo(x, y);
-      else ctx.lineTo(x, y);
-    });
-    ctx.stroke();
-    ctx.restore();
+    function buildLinePath() {
+      var p = new Path2D();
+      points.forEach(function (pt, i) {
+        var x = xOf(pt.t), y = yOf(pt.v);
+        if (i === 0) p.moveTo(x, y);
+        else p.lineTo(x, y);
+      });
+      return p;
+    }
+    function buildFillPath() {
+      var p = new Path2D();
+      p.moveTo(xOf(first.t), H - padB);
+      points.forEach(function (pt) {
+        p.lineTo(xOf(pt.t), yOf(pt.v));
+      });
+      p.lineTo(xOf(last.t), H - padB);
+      p.closePath();
+      return p;
+    }
+    function drawSeries(alpha) {
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      var fill = ctx.createLinearGradient(0, padT, 0, H - padB);
+      fill.addColorStop(0, "rgba(0,211,90,0.32)");
+      fill.addColorStop(1, "rgba(0,211,90,0)");
+      ctx.fillStyle = fill;
+      ctx.fill(buildFillPath());
+      ctx.strokeStyle = "#00d35a";
+      ctx.lineWidth = 2;
+      ctx.lineJoin = "round";
+      ctx.lineCap = "round";
+      ctx.stroke(buildLinePath());
+      ctx.restore();
+    }
 
-    // End dot
-    ctx.beginPath();
-    ctx.fillStyle = "#00d35a";
-    ctx.arc(xOf(last.t), yOf(last.v), 3.2, 0, Math.PI * 2);
-    ctx.fill();
+    if (scrubX == null) {
+      drawSeries(1);
+    } else {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(0, 0, scrubX, H);
+      ctx.clip();
+      drawSeries(1);
+      ctx.restore();
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(scrubX, 0, W - scrubX, H);
+      ctx.clip();
+      drawSeries(0.28);
+      ctx.restore();
+    }
+
+    // End dot (hidden while scrubbing unless the live point is at/left of the scrubber)
+    if (scrubX == null || xOf(last.t) <= scrubX + 0.5) {
+      ctx.beginPath();
+      ctx.fillStyle = "#00d35a";
+      ctx.arc(xOf(last.t), yOf(last.v), 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
 
     // Trade dots on the line. No text labels (names and PnL live in Activity).
     var colorMap = { blue: "#0a84ff", green: "#00d35a", red: "#ff453a", orange: "#ff9f0a" };
@@ -171,14 +195,84 @@
       ctx.lineWidth = 1.25;
       ctx.strokeStyle = "rgba(0,0,0,0.85)";
       ctx.stroke();
-      hits.push({ x: x, y: y, mint: m.mint, kind: m.kind });
+      hits.push({ x: x, y: y, mint: m.mint, kind: m.kind, t: t, mark: m });
     });
     canvas._deskHits = hits;
 
+    // Scrubber (press-and-hold / hover): vertical line, glow dot, time, optional axes.
+    if (scrubX != null) {
+      var snapped = nearestPoint(geo(hits), scrubX) || { x: scrubX, y: yOf(interpV(points, t0 + (scrubX - padL) / (W - padL - padR) * (t1 - t0))) };
+      var sx = snapped.x, sy = snapped.y;
+      ctx.save();
+      ctx.strokeStyle = "rgba(235,235,245,0.5)";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(sx, padT - 4);
+      ctx.lineTo(sx, H - padB);
+      ctx.stroke();
+      ctx.restore();
+
+      ctx.save();
+      ctx.fillStyle = "rgba(0,211,90,0.28)";
+      ctx.beginPath();
+      ctx.arc(sx, sy, 9, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowColor = "rgba(0,211,90,0.9)";
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = "#00d35a";
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      ctx.beginPath();
+      ctx.arc(sx, sy, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = "#00d35a";
+      ctx.fill();
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0,0,0,0.4)";
+      ctx.stroke();
+
+      if (scrub.label) {
+        ctx.save();
+        ctx.font = "11px -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif";
+        ctx.fillStyle = "rgba(235,235,245,0.88)";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "top";
+        var tw = ctx.measureText(scrub.label).width;
+        var lx = Math.max(tw / 2 + 4, Math.min(W - tw / 2 - 4, sx));
+        ctx.fillText(scrub.label, lx, 2);
+        ctx.restore();
+      }
+
+      if (scrub.axisX || scrub.axisY) {
+        ctx.save();
+        ctx.fillStyle = "rgba(235,235,245,0.45)";
+        ctx.font = "10px -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif";
+        ctx.textBaseline = "middle";
+        (scrub.axisY || []).forEach(function (a) {
+          if (!a || a.v == null || !a.text) return;
+          var y = yOf(Number(a.v));
+          if (!isFinite(y)) return;
+          ctx.textAlign = "right";
+          ctx.fillText(a.text, W - 2, y);
+        });
+        ctx.textBaseline = "alphabetic";
+        (scrub.axisX || []).forEach(function (a, i, arr) {
+          if (!a || !a.text) return;
+          ctx.textAlign = i === 0 ? "left" : (i === arr.length - 1 ? "right" : "center");
+          var ax = i === 0 ? padL : (i === arr.length - 1 ? (W - padR) : xOf(typeof a.t === "number" ? a.t : parseT(a.t)));
+          ctx.fillText(a.text, ax, H - 4);
+        });
+        ctx.restore();
+      }
+    }
+
+    canvas._deskChart = geo(hits);
     return { xOf: xOf, yOf: yOf, hits: hits };
   }
 
   function interpV(points, t) {
+
     if (!points.length) return 0;
     if (t <= points[0].t) return points[0].v;
     if (t >= points[points.length - 1].t) return points[points.length - 1].v;
@@ -340,5 +434,122 @@
     }
   }
 
-  global.Charts = { line: line, candles: candles, scoreRing: scoreRing, fit: fit, reduced: reduced };
+
+  function nearestPoint(geo, x) {
+    if (!geo || !geo.points || !geo.points.length || typeof geo.xOf !== "function") return null;
+    var pts = geo.points;
+    var lo = geo.padL, hi = (geo.W != null && geo.padR != null) ? (geo.W - geo.padR) : null;
+    if (typeof x === "number" && lo != null && hi != null) x = Math.max(lo, Math.min(hi, x));
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < pts.length; i++) {
+      var px = geo.xOf(pts[i].t);
+      var d = Math.abs(px - x);
+      if (d < bestD) {
+        bestD = d;
+        best = { i: i, t: pts[i].t, v: pts[i].v, x: px, raw: pts[i].raw };
+      }
+    }
+    if (best && typeof geo.yOf === "function") best.y = geo.yOf(best.v);
+    return best;
+  }
+
+  function nearestHit(hits, x, maxDist) {
+    maxDist = maxDist == null ? 14 : maxDist;
+    var best = null, bestD = maxDist;
+    (hits || []).forEach(function (h) {
+      var d = Math.abs(h.x - x);
+      if (d <= maxDist && (best == null || d < bestD)) {
+        best = h;
+        bestD = d;
+      }
+    });
+    return best;
+  }
+
+  function firstMoney(s) {
+    var m = String(s || "").match(/\$[0-9,]+(?:\.[0-9]+)?/);
+    return m ? m[0] : "";
+  }
+
+  function signedUsd(n) {
+    n = Number(n);
+    if (!isFinite(n)) return "";
+    var abs = "$" + Math.abs(n).toLocaleString("en-US", {
+      minimumFractionDigits: 2, maximumFractionDigits: 2
+    });
+    if (Math.abs(n) < 0.005) return "$0.00";
+    return (n < 0 ? "\u2212" : "+") + abs;
+  }
+
+  function stopPhrase(item) {
+    var d = String((item && (item.detail || item.mark || item.title || item.label)) || "");
+    if (/hard stop/i.test(d)) return "hard stop";
+    if (/trail/i.test(d)) return "trail";
+    if (/timeout/i.test(d)) return "timeout";
+    return "stopped";
+  }
+
+  function findActivity(items, mint, t) {
+    items = items || [];
+    var ts = typeof t === "number" ? t : parseT(t);
+    var best = null, bestD = Infinity;
+    for (var i = 0; i < items.length; i++) {
+      var it = items[i];
+      if (mint && it.mint && it.mint !== mint) continue;
+      if (mint && !it.mint) continue;
+      var d = Math.abs(parseT(it.ts) - ts);
+      if (d < bestD) { bestD = d; best = it; }
+    }
+    if (best && isFinite(ts) && ts && isFinite(bestD) && bestD > 2 * 60 * 1000) {
+      if (!(mint && best.mint && best.mint === mint)) return null;
+    }
+    return best;
+  }
+
+  function coinName(hit, item) {
+    var name = String((item && (item.name || "")) || "");
+    if (!name && item && item.title) {
+      name = String(item.title).replace(/^(Bought|Sold|Stopped)\s+/i, "");
+    }
+    if (!name && hit && hit.mark && hit.mark.label) {
+      var lab = String(hit.mark.label);
+      if (/^bought\s+/i.test(lab)) name = lab.replace(/^bought\s+/i, "");
+      else if (!/^[\+\-\u2212$0-9]/.test(lab)) name = lab;
+    }
+    return name || "coin";
+  }
+
+  function scrubNote(hit, items) {
+    if (!hit) return "";
+    var it = findActivity(items, hit.mint, hit.t) || {};
+    var name = coinName(hit, it);
+    var kind = String(hit.kind || it.kind || "").toLowerCase();
+    if (kind === "bought") {
+      var amt = firstMoney(it.amount) || firstMoney(it.value);
+      return ("bought " + name + (amt ? " " + amt : "")).trim();
+    }
+    var phrase;
+    if (kind === "stopped" || /stop/i.test(kind) || /stop/i.test(it.detail || "")) {
+      phrase = stopPhrase(it);
+    } else if (kind === "sold") {
+      phrase = /trail/i.test(it.detail || "") ? "trail" : "sold";
+    } else {
+      return "";
+    }
+    var pnl = it.pnlUsd != null ? it.pnlUsd : it.pnl;
+    var usd = signedUsd(pnl);
+    if (!usd && hit.mark && hit.mark.label) {
+      var m = String(hit.mark.label).match(/[\+\-\u2212]?\$[0-9,]+(?:\.[0-9]+)?/);
+      if (m) usd = m[0].replace("-", "\u2212");
+    }
+    return (phrase + " " + name + (usd ? " " + usd : "")).trim();
+  }
+
+  global.Charts = {
+    line: line, candles: candles, scoreRing: scoreRing, fit: fit, reduced: reduced,
+    parseT: parseT, nearestPoint: nearestPoint, nearestHit: nearestHit,
+    firstMoney: firstMoney, signedUsd: signedUsd, stopPhrase: stopPhrase,
+    findActivity: findActivity, scrubNote: scrubNote
+  };
+
 })(typeof window !== "undefined" ? window : this);
