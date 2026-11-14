@@ -720,7 +720,9 @@
   function cardScanner(a) {
     a = a || {};
     const card = a.card || {};
-    const title = card.title || ((a.pools != null ? a.pools : 0) + " pools");
+    const waiting = a.waiting != null ? a.waiting : (a.pools != null ? a.pools : 0);
+    const title = card.title || (waiting + " waiting");
+    const subtitle = card.subtitle || ((a.seen != null ? a.seen : 0) + " seen tonight");
     const feed = a.feed || [];
     let body;
     if (!feed.length) body = '<div class="card-empty">Listening for graduations</div>';
@@ -734,7 +736,7 @@
       }).join("") + "</div>";
     }
     return '<article class="agent-card scanner" data-go="agents"><div class="kicker">Scanner</div><h3>' +
-      esc(title) + "</h3>" + body + "</article>";
+      esc(title) + '</h3><div class="card-sub">' + esc(subtitle) + "</div>" + body + "</article>";
   }
   function cardAuditor(a) {
     a = a || {};

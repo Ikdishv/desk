@@ -354,6 +354,11 @@ a { color: var(--blue); text-decoration: none; }
   font-weight: 700;
   letter-spacing: -0.03em;
 }
+.agent-card .card-sub {
+  color: var(--secondary);
+  font-size: 14px;
+  margin: -6px 0 10px;
+}
 .agent-card.scanner h3 { color: var(--cyan); }
 .agent-card.analyst h3 { color: var(--yellow); }
 .agent-card.executor h3 { color: var(--green); }
