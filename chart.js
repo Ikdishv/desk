@@ -530,7 +530,13 @@
     }
     var phrase;
     if (kind === "take_profit" || kind === "take-profit" || /take profit/i.test(it.detail || "") || /take profit/i.test(it.title || "")) {
-      phrase = /5x/i.test((it.detail || "") + (it.title || "") + kind) ? "take profit 5x" : "take profit 2x";
+      var blob = String(it.detail || "") + " " + String(it.title || "");
+      var m = blob.match(/take profit\s+(?:\+\s*\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?x)/i);
+      if (m) phrase = m[0].toLowerCase().replace(/\s+/g, " ").replace(/\+\s+/, "+");
+      else if (/5x/i.test(blob)) phrase = "take profit 5x";
+      else if (/\+\s*35\s*%/i.test(blob)) phrase = "take profit +35%";
+      else if (/2x/i.test(blob)) phrase = "take profit 2x";
+      else phrase = "take profit";
     } else if (kind === "stopped" || /stop/i.test(kind) || /stop/i.test(it.detail || "")) {
       phrase = stopPhrase(it);
     } else if (kind === "sold") {
