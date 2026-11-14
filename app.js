@@ -1336,13 +1336,16 @@
     }
     const pos = c.position;
     const hasPos = pos && (pos.status === "open" || pos.status === "exiting");
+    const lane = (pos && pos.lane) || c.lane;
+    const rocket = lane === "rocket";
     let h = navbar({
-      title: (c.name || "Coin") + (paper ? "" : ""),
+      title: (rocket ? "🚀 " : "") + (c.name || "Coin") + (paper ? "" : ""),
       back: "home",
     }) + errorRow();
     h += '<div class="coin-head">';
     h += '<div style="display:flex;align-items:center;gap:8px"><div class="coin-meta">' +
-      esc((c.symbol || c.name || "") + " · " + (c.chain || "Solana") + (c.age ? " · " + c.age : "")) +
+      esc((c.symbol || c.name || "") + " · " + (c.chain || "Solana") + (c.age ? " · " + c.age : "") +
+        (rocket ? " · 🚀 rocket" : "")) +
       "</div>";
     if (c.shield) h += '<span class="shield">' + esc(c.shield) + "</span>";
     if (paper) h += '<span class="paper-pill" style="margin:0 0 0 auto">PAPER</span>';
@@ -1364,7 +1367,8 @@
     h += stat("Holders", hold != null ? String(hold) : "n/a");
     h += "</div>";
     if (hasPos) {
-      h += '<div class="pos-card"><h4>Your position · ' + money(pos.sizeUsd, 2) + " in · Executor</h4>";
+      h += '<div class="pos-card"><h4>Your position · ' + money(pos.sizeUsd, 2) + " in · Executor" +
+        (rocket ? " · 🚀" : "") + "</h4>";
       h += '<div class="stat-v">Entry ' + priceFmt(pos.entryPrice) +
         (pos.stopLabel ? " · stop " + esc(pos.stopLabel) : "") + "</div></div>";
       const rl = c.riskLine || c.exits || {};
@@ -1373,6 +1377,16 @@
       if (rl.trailLine != null) h += '<div>Trail line · ' + priceFmt(rl.trailLine) + "</div>";
       const left = pos.timeoutLeft || c.timeoutLeft;
       if (left) h += "<div>Time left to timeout · " + esc(left) + "</div>";
+      h += "</div>";
+    }
+    const parts = c.partialSells || [];
+    if (parts.length) {
+      h += '<div class="pos-card"><h4>Partial sells</h4>';
+      parts.forEach(function (s) {
+        h += '<div class="stat-v">' + esc((s.time || "") + (s.time ? " · " : "") +
+          (s.detail || s.title || "take profit") +
+          (s.amount ? " · " + s.amount : "")) + "</div>";
+      });
       h += "</div>";
     }
     h += coinAuditSection(c);

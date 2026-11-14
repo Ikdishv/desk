@@ -529,7 +529,9 @@
       return ("bought " + name + (amt ? " " + amt : "")).trim();
     }
     var phrase;
-    if (kind === "stopped" || /stop/i.test(kind) || /stop/i.test(it.detail || "")) {
+    if (kind === "take_profit" || kind === "take-profit" || /take profit/i.test(it.detail || "") || /take profit/i.test(it.title || "")) {
+      phrase = /5x/i.test((it.detail || "") + (it.title || "") + kind) ? "take profit 5x" : "take profit 2x";
+    } else if (kind === "stopped" || /stop/i.test(kind) || /stop/i.test(it.detail || "")) {
       phrase = stopPhrase(it);
     } else if (kind === "sold") {
       phrase = /trail/i.test(it.detail || "") ? "trail" : "sold";
