@@ -562,7 +562,8 @@
     return raw;
   }
   function profileUrlFor(handle) {
-    // Must match links.py profile_url exactly.
+    // Must match links.py profile_url exactly:
+    //   https://fomo.family/profile/{handle without @}?source=share_link&r=savipww
     if (state && state.profileUrl) return String(state.profileUrl);
     const h = String(handle || "beready").replace(/^@+/, "");
     return "https://fomo.family/profile/" + h + "?source=share_link&r=savipww";
@@ -888,8 +889,9 @@
     if (!state) return renderLoading("account");
     const paper = (state.mode || "").toUpperCase() === "PAPER";
     const handle = state.fomoHandle || "";
-    const profile = state.profileUrl || "";
-    const invite = state.inviteUrl || state.signupUrl || "";
+    // Same fallbacks as links.py (profile_url / SIGNUP_URL), r=savipww kept.
+    const profile = profileUrlFor(handle || fomoHandle());
+    const invite = state.inviteUrl || state.signupUrl || "https://fomo.family/r/savipww";
     let h = navbar({ title: "Account" }) + errorRow();
     h += '<div class="page-pad">';
     h += '<div class="group">Mode</div><div class="mode-switch">';
@@ -1873,7 +1875,7 @@
 
   // SW: cache the shell. No push subscription (plan B).
   // Reload once when a new worker claims the page so the installed
-  // home-screen app picks up the bumped cache (desk-shell-v11).
+  // home-screen app picks up the bumped cache (desk-shell-v13).
   if ("serviceWorker" in navigator && !isLocalHost()) {
     var swRefreshing = false;
     navigator.serviceWorker.addEventListener("controllerchange", function () {
