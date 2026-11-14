@@ -39,6 +39,7 @@
     var H = opts.height || rect.height || 200;
     var ctx = fit(canvas, W, H);
     ctx.clearRect(0, 0, W, H);
+    canvas._deskHits = [];
 
     var points = (opts.points || []).map(function (p) {
       return { t: parseT(p.t), v: Number(p.v), raw: p };
@@ -50,7 +51,7 @@
     start = Number(start);
     if (!isFinite(start)) start = 0;
 
-    var padL = 8, padR = 36, padB = 18, padT = 36; // room for marks above the line
+    var padL = 8, padR = 36, padB = 18, padT = 14; // room for the end dot and trade dots
     var marks = opts.marks || [];
     var empty = opts.empty || points.length < 2;
 
@@ -95,7 +96,8 @@
         ctx.textBaseline = "middle";
         ctx.fillText(opts.emptyText || "Waiting for the first trade", W / 2, Math.min(H * 0.58, yS + 28));
       }
-      return { xOf: xOf, yOf: yOf };
+      canvas._deskHits = [];
+      return { xOf: xOf, yOf: yOf, hits: [] };
     }
 
     // Line path
@@ -153,41 +155,27 @@
     ctx.arc(xOf(last.t), yOf(last.v), 3.2, 0, Math.PI * 2);
     ctx.fill();
 
-    // Marks: never overlap — a later mark moves up a row
-    var placed = [];
-    var rowH = 16;
+    // Trade dots on the line. No text labels (names and PnL live in Activity).
     var colorMap = { blue: "#0a84ff", green: "#00d35a", red: "#ff453a", orange: "#ff9f0a" };
+    var hits = [];
     marks.forEach(function (m) {
       var t = parseT(m.t);
       if (t < t0 || t > t1) return;
       var x = xOf(t);
-      var yLine = yOf(interpV(points, t));
-      var row = 0;
-      var label = String(m.label || "");
-      ctx.font = "11px -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif";
-      var tw = ctx.measureText(label).width;
-      var mx = x;
-      if (mx + tw / 2 > W - 4) mx = W - 4 - tw / 2;
-      if (mx - tw / 2 < padL) mx = padL + tw / 2;
-      function collides(r) {
-        var y = yLine - 14 - r * rowH;
-        return placed.some(function (p) {
-          return Math.abs(p.y - y) < rowH - 1 && Math.abs(p.x - mx) < (p.w + tw) / 2 + 6;
-        });
-      }
-      while (collides(row) && row < 6) row++;
-      var y = yLine - 14 - row * rowH;
-      if (y < 10) y = 10;
+      var y = yOf(interpV(points, t));
       var col = colorMap[m.color] || m.color || "#0a84ff";
+      ctx.beginPath();
+      ctx.arc(x, y, 4, 0, Math.PI * 2);
       ctx.fillStyle = col;
-      ctx.textAlign = "center";
-      ctx.textBaseline = "middle";
-      ctx.globalAlpha = 1;
-      ctx.fillText(label, mx, y);
-      placed.push({ x: mx, y: y, w: tw });
+      ctx.fill();
+      ctx.lineWidth = 1.25;
+      ctx.strokeStyle = "rgba(0,0,0,0.85)";
+      ctx.stroke();
+      hits.push({ x: x, y: y, mint: m.mint, kind: m.kind });
     });
+    canvas._deskHits = hits;
 
-    return { xOf: xOf, yOf: yOf };
+    return { xOf: xOf, yOf: yOf, hits: hits };
   }
 
   function interpV(points, t) {

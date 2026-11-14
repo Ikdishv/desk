@@ -1201,6 +1201,8 @@
       if (left) h += "<div>Time left to timeout · " + esc(left) + "</div>";
       h += "</div>";
     }
+    h += coinAuditSection(c);
+    h += coinAnalystSection(c);
     const url = c.coinUrl || c.url;
     if (url) {
       const label = hasPos ? "Sell on FOMO" : "Buy on FOMO";
@@ -1220,6 +1222,66 @@
   }
   function stat(k, v) {
     return '<div><div class="stat-k">' + esc(k) + '</div><div class="stat-v">' + esc(v) + "</div></div>";
+  }
+  function layerMark(pass) {
+    if (pass === true) return '<span class="mark ok">✓</span>';
+    if (pass === false) return '<span class="mark no">×</span>';
+    return '<span class="mark wait">—</span>';
+  }
+  function coinAuditSection(c) {
+    let h = '<section class="section"><div class="section-head"><h2>Audit</h2></div>';
+    const aud = c && c.audit;
+    const layers = (aud && aud.layers) || [];
+    if (!aud || !layers.length) {
+      h += '<div class="empty-note">No audit data</div></section>';
+      return h;
+    }
+    h += '<div class="layers">';
+    layers.forEach(function (L) {
+      h += '<div class="layer"><span class="vn">' + esc(L.name || "") + '</span><span class="vv">' +
+        esc(L.value || L.value_text || "") + "</span>" + layerMark(L.pass) + "</div>";
+    });
+    h += "</div>";
+    if (aud.passed === true) h += '<div class="verdict ok">Passed · 8/8</div>';
+    else if (aud.passed === false) {
+      h += '<div class="verdict no">Rejected · ' + esc(aud.reason || "failed") + "</div>";
+    }
+    h += "</section>";
+    return h;
+  }
+  function fmtAnswer(v) {
+    if (v == null || v === "") return "n/a";
+    if (typeof v === "number" && isFinite(v)) {
+      return Math.abs(v - Math.round(v)) < 1e-9 ? String(Math.round(v)) : v.toFixed(2);
+    }
+    return String(v);
+  }
+  function coinAnalystSection(c) {
+    const an = (c && (c.analyst || c.analysis)) || null;
+    let h = '<section class="section"><div class="section-head"><h2>Analyst</h2></div>';
+    if (!an) {
+      h += '<div class="empty-note">No analyst data</div></section>';
+      return h;
+    }
+    if (an.score != null && an.score !== "") {
+      h += '<div class="analyst-score">Score <span class="num">' + esc(String(an.score)) + "</span></div>";
+    }
+    if (an.passed === true) h += '<div class="verdict ok">Passed</div>';
+    else if (an.passed === false) h += '<div class="verdict no">Rejected</div>';
+    else if (an.verdict) h += '<div class="verdict">' + esc(String(an.verdict)) + "</div>";
+    const answers = an.answers || {};
+    h += '<div class="layers">';
+    ["alive_6h", "organic", "flush", "chase"].forEach(function (k) {
+      h += '<div class="layer"><span class="vn">' + esc(k.replace(/_/g, " ")) +
+        '</span><span class="vv">' + esc(fmtAnswer(answers[k])) + "</span></div>";
+    });
+    h += "</div>";
+    const failed = an.failed || [];
+    if (failed.length) {
+      h += '<div class="verdict-sub">Failed · ' + esc(failed.join(", ")) + "</div>";
+    }
+    h += "</section>";
+    return h;
   }
 
   function skelRow() {
@@ -1805,6 +1867,15 @@
     }
     if (e.target.closest("[data-act='search']")) { searchOpen = true; renderSearch(); return; }
     if (e.target.closest("[data-act='bell']")) { bellOpen = true; renderBell(); return; }
+    const chartEl = e.target.closest && e.target.closest("#home-chart");
+    if (chartEl) {
+      const mint = chartMarkMint(chartEl, e);
+      if (mint) {
+        e.preventDefault();
+        go("coin", mint);
+        return;
+      }
+    }
     const hit = e.target.closest("[data-go]");
     if (!hit) return;
     // don't hijack real FOMO <a> decisions
@@ -1816,9 +1887,30 @@
   }
   if (!bound) {
     document.addEventListener("click", onClick);
+    document.addEventListener("mousemove", function (e) {
+      const el = e.target && e.target.id === "home-chart" ? e.target : null;
+      if (!el) return;
+      el.style.cursor = chartMarkMint(el, e) ? "pointer" : "default";
+    });
     bound = true;
   }
 
+  function chartMarkMint(canvas, e) {
+    const hits = canvas._deskHits || [];
+    if (!hits.length) return null;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    let best = null, bestD = 14;
+    hits.forEach(function (h) {
+      const d = Math.hypot(h.x - x, h.y - y);
+      if (d <= 14 && (best == null || d < bestD)) {
+        best = h;
+        bestD = d;
+      }
+    });
+    return (best && best.mint) ? best.mint : null;
+  }
   function copyLink(url) {
     const done = function () {
       const n = document.getElementById("copy-note");
