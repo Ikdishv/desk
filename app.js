@@ -11,6 +11,7 @@
   const STALE_MS = 3 * 60 * 1000;
   const LS_D = "desk.d";
   const LS_RAW = "desk.rawBase";
+  const LS_LOCK = "desk.focusLockUntil";
   const TAB_ROUTES = { home: 1, agents: 1, activity: 1, account: 1 };
   try { history.scrollRestoration = "manual"; } catch (e) {}
   document.documentElement.setAttribute("lang", "en");
@@ -37,6 +38,8 @@
   let unread = false;
   let seenActivityId = 0;
   let pending = null; // Apply-sheet draft: {kind, key, value, ...}
+  let breakMins = 60; // default Take a break duration
+  let lockTouchBound = false;
   let dragging = false;
   let interacting = false;
   let rawBase = "";
@@ -1098,6 +1101,16 @@
     h += '<div class="note">Send a test push from the bot with any command, or type /status.</div>';
     h += '<div class="group">Notifications</div>';
     h += '<div class="note">' + esc(state.webPushNote || "Pushes go to Telegram. Web push is not available on this host.") + "</div>";
+
+    h += '<div class="group">Break</div>';
+    h += '<div class="mode-switch">';
+    [{ m: 30, label: "30 min" }, { m: 60, label: "1 hour" }, { m: 120, label: "2 hours" }].forEach(function (opt) {
+      h += '<button type="button" class="' + (breakMins === opt.m ? "on" : "") +
+        '" data-act="break-mins" data-mins="' + opt.m + '">' + opt.label + "</button>";
+    });
+    h += "</div>";
+    h += '<button type="button" class="break-lock-btn" data-act="take-break">Take a break</button>';
+    h += '<div class="note">Locks this screen for the time you pick. The desk keeps running, including Telegram alerts.</div>';
     h += "</div>" + tabbar();
     $app.innerHTML = h;
   }
@@ -2061,6 +2074,23 @@
       if (u) window.open(u, "_blank", "noopener");
       return;
     }
+    if (isFocusLocked()) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
+    if (e.target.closest("[data-act='break-mins']")) {
+      e.preventDefault();
+      const n = parseInt(e.target.closest("[data-act='break-mins']").getAttribute("data-mins"), 10);
+      if (n === 30 || n === 60 || n === 120) breakMins = n;
+      if (route === "account") renderAccount();
+      return;
+    }
+    if (e.target.closest("[data-act='take-break']")) {
+      e.preventDefault();
+      startFocusLock(breakMins);
+      return;
+    }
     if (e.target.closest("[data-act='search']")) { searchOpen = true; renderSearch(); return; }
     if (e.target.closest("[data-act='bell']")) { bellOpen = true; renderBell(); return; }
     const chartEl = e.target.closest && e.target.closest("#home-chart");
@@ -2234,6 +2264,7 @@
     adoptFromHash();
     window.scrollTo(0, 0);
     render();
+    syncFocusLock();
   });
   document.addEventListener("visibilitychange", function () {
     if (document.visibilityState !== "visible") return;
@@ -2265,6 +2296,94 @@
     };
   } catch (e) {}
 
+  function readLockUntil() {
+    try {
+      const v = parseInt(localStorage.getItem(LS_LOCK) || "", 10);
+      return isFinite(v) && v > 0 ? v : 0;
+    } catch (e) {
+      return 0;
+    }
+  }
+  function isFocusLocked() {
+    return Date.now() < readLockUntil();
+  }
+  function formatLockTime(ms) {
+    const s = Math.max(0, Math.ceil(Number(ms) / 1000));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    function pad(n) { return (n < 10 ? "0" : "") + n; }
+    if (h > 0) return h + ":" + pad(m) + ":" + pad(sec);
+    return pad(m) + ":" + pad(sec);
+  }
+  function startFocusLock(mins) {
+    const n = (mins === 30 || mins === 120) ? mins : 60;
+    const until = Date.now() + n * 60 * 1000;
+    try { localStorage.setItem(LS_LOCK, String(until)); } catch (e) {}
+    searchOpen = false;
+    bellOpen = false;
+    if (typeof hideApplySheet === "function") {
+      try { hideApplySheet(true); } catch (e) {}
+    }
+    showFocusLock();
+  }
+  function clearFocusLock() {
+    try { localStorage.removeItem(LS_LOCK); } catch (e) {}
+    hideFocusLock();
+  }
+  function onLockTouch(e) {
+    e.preventDefault();
+    e.stopPropagation();
+  }
+  function showFocusLock() {
+    var el = document.getElementById("focus-lock");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "focus-lock";
+      el.className = "focus-lock";
+      el.setAttribute("role", "dialog");
+      el.setAttribute("aria-modal", "true");
+      el.setAttribute("aria-label", "Break time");
+      el.innerHTML = '<div class="focus-lock-time" aria-live="polite">00:00</div>' +
+        '<p class="focus-lock-copy">Break time. The desk keeps running.</p>';
+      document.body.appendChild(el);
+      ["pointerdown", "pointerup", "click", "touchstart", "touchend", "wheel", "contextmenu"].forEach(function (ev) {
+        el.addEventListener(ev, onLockTouch, true);
+      });
+      el.addEventListener("touchmove", onLockTouch, { capture: true, passive: false });
+    }
+    document.body.classList.add("focus-locked");
+    if (!lockTouchBound) {
+      lockTouchBound = true;
+      document.addEventListener("touchmove", function (e) {
+        if (isFocusLocked()) e.preventDefault();
+      }, { capture: true, passive: false });
+    }
+    tickFocusLock();
+  }
+  function hideFocusLock() {
+    var el = document.getElementById("focus-lock");
+    if (el) el.remove();
+    document.body.classList.remove("focus-locked");
+  }
+  function tickFocusLock() {
+    if (!isFocusLocked()) {
+      if (document.getElementById("focus-lock") || document.body.classList.contains("focus-locked")) {
+        clearFocusLock();
+      }
+      return;
+    }
+    var el = document.getElementById("focus-lock");
+    if (!el) showFocusLock();
+    el = document.getElementById("focus-lock");
+    var t = el && el.querySelector(".focus-lock-time");
+    if (t) t.textContent = formatLockTime(readLockUntil() - Date.now());
+  }
+  function syncFocusLock() {
+    if (isFocusLocked()) showFocusLock();
+    else hideFocusLock();
+  }
+
   parseHash();
   render(); // skeletons in the final layout immediately, before the first fetch
   tick();
@@ -2278,5 +2397,7 @@
         row.textContent = "Desk offline · retrying in " + retryIn + "s · last update " + t;
       }
     }
+    tickFocusLock();
   }, 1000);
+  syncFocusLock();
 })();
