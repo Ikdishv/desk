@@ -31,6 +31,7 @@
   let timer = null;
   let countdownTimer = null;
   let chartRange = "LIVE";
+  let activityRange = "ALL";
   let lastBalance = null;
   let searchOpen = false;
   let searchQ = "";
@@ -499,6 +500,62 @@
 
   function items() { return (activity && activity.items) || []; }
 
+  function parseTs(ts) {
+    if (ts == null || ts === "") return NaN;
+    if (typeof ts === "number") return Number(ts);
+    return Date.parse(String(ts));
+  }
+
+  function rangeSinceMs(range) {
+    if (range === "ALL") return null;
+    if (range === "LIVE") {
+      const ms = parseTs(state && state.nightStartedAt);
+      return isFinite(ms) ? ms : 0;
+    }
+    const hours = { "1H": 1, "4H": 4, "1D": 24, "1W": 24 * 7 }[range];
+    if (!hours) return null;
+    return Date.now() - hours * 3600 * 1000;
+  }
+
+  function itemsInRange(range) {
+    const all = items();
+    const since = rangeSinceMs(range);
+    if (since == null) return all;
+    return all.filter(function (x) {
+      const ms = parseTs(x.ts);
+      return isFinite(ms) && ms >= since;
+    });
+  }
+
+  function activityWhen(it) {
+    const ms = parseTs(it && it.ts);
+    if (!isFinite(ms)) return (it && it.time) || "";
+    const d = new Date(ms);
+    const time = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Prague", hour: "2-digit", minute: "2-digit", hour12: false,
+    }).format(d);
+    const dayOpts = { timeZone: "Europe/Prague", day: "numeric", month: "short" };
+    const day = new Intl.DateTimeFormat("en-GB", dayOpts).format(d);
+    const today = new Intl.DateTimeFormat("en-GB", dayOpts).format(new Date());
+    return day === today ? time : (day + ", " + time);
+  }
+
+  function rangeButtons(current) {
+    let h = '<div class="ranges" id="ranges">';
+    ["LIVE", "1H", "4H", "1D", "1W", "ALL"].forEach(function (r) {
+      h += '<button type="button" data-range="' + r + '" class="' + (current === r ? "on" : "") + '">' + r + "</button>";
+    });
+    h += "</div>";
+    return h;
+  }
+
+  function emptyActivityNote(range, list) {
+    if (list && list.length) return "";
+    if (range === "LIVE") return '<div class="empty-note">Nothing yet tonight</div>';
+    if (range === "ALL") return '<div class="empty-note">No activity yet</div>';
+    return '<div class="empty-note">No activity in this range</div>';
+  }
+
   function valUp(s) {
     const t = String(s || "");
     if (t.charAt(0) === "+") return "up";
@@ -663,7 +720,7 @@
     const paper = (state.mode || "").toUpperCase() === "PAPER";
     const warn = state.ticketWarning && (state.ticketWarning.message || state.ticketWarning);
     const ag = agentsOf();
-    const last5 = items().slice(0, 5);
+    const last5 = itemsInRange(chartRange).slice(0, 5);
     const emptyChart = isEmptyChart();
 
     let h = navbar() + errorRow();
@@ -685,11 +742,7 @@
     h += "</div>";
 
     h += '<div class="chart-wrap"><canvas id="home-chart"></canvas></div>';
-    h += '<div class="ranges" id="ranges">';
-    ["LIVE", "1H", "4H", "1D", "1W", "ALL"].forEach(function (r) {
-      h += '<button data-range="' + r + '" class="' + (chartRange === r ? "on" : "") + '">' + r + "</button>";
-    });
-    h += "</div>";
+    h += rangeButtons(chartRange);
 
     const running = ["scanner", "auditor", "analyst", "executor", "risk"].filter(function (k) {
       return ag[k] && !ag[k].paused;
@@ -702,8 +755,8 @@
 
     h += '<section class="section"><div class="section-head"><h2>Activity</h2>' +
       '<button class="see" data-go="activity">See all</button></div>';
-    if (!last5.length) h += '<div class="empty-note">Nothing yet tonight</div>';
-    else h += '<div class="list">' + last5.map(activityRow).join("") + "</div>";
+    h += emptyActivityNote(chartRange, last5);
+    if (last5.length) h += '<div class="list">' + last5.map(activityRow).join("") + "</div>";
     h += "</section>";
     h += tabbar();
     $app.innerHTML = h;
@@ -714,9 +767,9 @@
   }
 
   function isEmptyChart() {
-    return !((chart.marks || []).length) && !(state && (state.positions || []).length) && !items().some(function (x) {
-      return /bought|sold|stopped/i.test(x.kind || "");
-    });
+    const pack = (chart.ranges && chart.ranges[chartRange]) || {};
+    const points = pack.points || [];
+    return points.length < 2;
   }
 
   function nightStartBalance() {
@@ -868,7 +921,7 @@
     if (!was) return;
     if (!opts.silent) {
       restoreLiveHeader();
-      drawHomeChart(isEmptyChart());
+      drawHomeChart();
     }
   }
 
@@ -884,12 +937,13 @@
     const pack = (chart.ranges && chart.ranges[chartRange]) || {};
     const points = pack.points || [];
     const start = pack.start != null ? pack.start : (chart.start != null ? chart.start : (state && (state.nightStartBalance || state.paperStartStack)));
-    const marks = empty ? [] : (chart.marks || []);
+    const noLine = (empty == null ? isEmptyChart() : !!empty) || points.length < 2;
+    const marks = noLine ? [] : (chart.marks || []);
     Charts.line(c, {
       points: points,
       start: start,
       marks: marks,
-      empty: empty || points.length < 2,
+      empty: noLine,
       emptyText: "Waiting for the first trade",
       scrub: scrub || null,
     });
@@ -986,7 +1040,9 @@
     const mint = it.mint || "";
     const kind = (it.kind || "").toLowerCase();
     const go = (kind === "rejected" || kind === "skipped") ? "auditor" : "coin";
-    const sub = it.subtitle || ((it.agent || "") + (it.detail ? " · " + it.detail : ""));
+    const when = activityWhen(it);
+    const base = it.subtitle || ((it.agent || "") + (it.detail ? " · " + it.detail : ""));
+    const sub = [when, base].filter(function (x) { return x; }).join(" · ");
     const val = it.value || it.amount || "";
     return '<button class="row-card" data-go="' + go + '" data-mint="' + esc(mint) + '">' +
       '<div class="mid"><div class="ttl">' + esc(it.title || "") + '</div><div class="sub">' + esc(sub) +
@@ -1052,10 +1108,11 @@
 
   function renderActivity() {
     if (!state) return renderLoading("activity");
-    const list = items();
+    const list = itemsInRange(activityRange);
     let h = navbar({ title: "Activity" }) + errorRow();
-    if (!list.length) h += '<div class="empty-note">Nothing yet tonight</div>';
-    else h += '<div class="list">' + list.map(activityRow).join("") + "</div>";
+    h += rangeButtons(activityRange);
+    h += emptyActivityNote(activityRange, list);
+    if (list.length) h += '<div class="list">' + list.map(activityRow).join("") + "</div>";
     h += tabbar();
     $app.innerHTML = h;
     unread = false;
@@ -1577,7 +1634,7 @@
     unread = false;
     const box = document.createElement("div");
     box.className = "overlay";
-    const list = items().slice(0, 12);
+    const list = itemsInRange("LIVE").slice(0, 12);
     if (list.length && list[0].id) seenActivityId = Math.max(seenActivityId, list[0].id);
     box.innerHTML = '<div class="sheet"><div style="font-weight:650;margin-bottom:8px">Grok Bot · now</div>' +
       (list.length ? list.map(function (it) {
@@ -1990,12 +2047,10 @@
         const b = e.target.closest("[data-range]");
         if (!b) return;
         endScrub({ silent: true });
-        chartRange = b.getAttribute("data-range");
-        ranges.querySelectorAll("button").forEach(function (x) {
-          x.classList.toggle("on", x === b);
-        });
-        const empty = !((chart.marks || []).length);
-        drawHomeChart(empty && chartRange === "LIVE" && !(state.positions || []).length);
+        const r = b.getAttribute("data-range");
+        if (route === "activity") activityRange = r;
+        else chartRange = r;
+        render();
       });
     }
     bindControls();
